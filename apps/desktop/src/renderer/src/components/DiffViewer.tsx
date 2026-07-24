@@ -119,7 +119,9 @@ export function DiffViewer({ diff, fullDiff }: { diff: string; fullDiff: string 
         </div>
       </div>
 
-      {mode === 'unified' ? (
+      {!source.trim() && <p className="text-[10px] text-muted">No diff to display.</p>}
+
+      {source.trim() ? (mode === 'unified' ? (
         <div className="grid max-h-96 grid-cols-[2rem_2rem_1fr] overflow-auto rounded-md border border-border bg-background font-mono text-[10px]">
           {lines.map((line, i) => {
             if (line.type === 'meta' || line.type === 'hunk') {
@@ -188,7 +190,7 @@ export function DiffViewer({ diff, fullDiff }: { diff: string; fullDiff: string 
             )
           })}
         </div>
-      )}
+      )) : null}
     </div>
   )
 }

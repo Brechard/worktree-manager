@@ -280,13 +280,15 @@ export async function getFileDiff(
     // git diff --no-index exits with 1 when files differ, which is expected for new files.
     const { stdout, stderr, exitCode } = await runGit(
       cwd,
-      ['diff', '--no-index', '-p', ...contextArgs, '--', '/dev/null', filePath],
+      ['diff', '--no-color', '--no-index', '-p', ...contextArgs, '--', '/dev/null', filePath],
       { raw: true }
     )
     if (exitCode !== 0 && exitCode !== 1) throw new Error(stderr || `Could not load diff for ${filePath}`)
     return stdout
   }
-  const args = staged ? ['diff', '--cached', ...contextArgs, '--', filePath] : ['diff', ...contextArgs, '--', filePath]
+  const args = staged
+    ? ['diff', '--no-color', '--cached', ...contextArgs, '--', filePath]
+    : ['diff', '--no-color', ...contextArgs, '--', filePath]
   const { stdout, exitCode, stderr } = await runGit(cwd, args, { raw: true })
   if (exitCode !== 0) throw new Error(stderr || `Could not load diff for ${filePath}`)
   return stdout

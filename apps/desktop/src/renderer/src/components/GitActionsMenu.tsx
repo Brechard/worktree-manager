@@ -40,7 +40,7 @@ export function GitActionsMenu({
   }, [open])
 
   const itemClass =
-    'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-accent disabled:opacity-50'
+    'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-foreground transition-colors hover:bg-accent disabled:opacity-50'
   const busyIcon = <Loader2 className="h-3.5 w-3.5 animate-spin" />
 
   return (
@@ -58,7 +58,7 @@ export function GitActionsMenu({
         <ChevronDown className={cn('h-3 w-3 transition-transform', open && 'rotate-180')} />
       </button>
       {open && (
-        <div className="absolute right-0 z-10 mt-1 w-44 rounded-md border border-border bg-popover p-1 shadow-md">
+        <div className="absolute right-0 z-10 mt-1 w-48 rounded-md border border-border bg-background p-1 shadow-2xl ring-1 ring-border">
           <button
             onClick={() => {
               setOpen(false)

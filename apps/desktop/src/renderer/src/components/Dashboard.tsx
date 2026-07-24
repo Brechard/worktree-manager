@@ -415,7 +415,7 @@ export function Dashboard() {
                     <p className="text-sm">No worktrees match this filter.</p>
                   </div>
                 ) : (
-                  <div className="overflow-hidden rounded-xl border border-border bg-card">
+                  <div className="rounded-xl border border-border bg-card">
                     {repoWorktrees.map((w) => (
                       <WorktreeRow
                         key={w.id}

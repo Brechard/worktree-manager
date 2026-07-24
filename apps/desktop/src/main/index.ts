@@ -30,7 +30,9 @@ import {
   pushWorktree,
   rebaseWorktree,
   refreshPullRequest,
+  refreshBaseBranch,
   runCommand,
+  toRepositoryBaseStatus,
   updateBaseBranch,
 } from '@worktree/shared'
 import {
@@ -39,12 +41,15 @@ import {
   worktreeSchema,
   type AppSettings,
   type Repository,
+  type RepositoryBaseStatus,
   type ScanProgress,
   type ScanResult,
   type Worktree,
   type WorktreeDetails,
   type WorktreeStatus,
 } from '@worktree/contracts'
+
+type BaseBranchSnapshot = Awaited<ReturnType<typeof refreshBaseBranch>>
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -342,6 +347,63 @@ ipcMain.handle('cancel-scan', async () => {
   cancelScan = true
 })
 
+function statusCwd(repository: Repository, worktrees: Worktree[]): string {
+  if (existsSync(repository.path)) return repository.path
+  return (
+    worktrees.find(
+      (worktree) =>
+        worktree.repositoryId === repository.id &&
+        existsSync(worktree.path)
+    )?.path ?? repository.path
+  )
+}
+
+async function refreshRepositoryBaseStatuses(
+  repositories: Repository[],
+  worktrees: Worktree[]
+): Promise<{
+  snapshots: Map<string, BaseBranchSnapshot>
+  statuses: RepositoryBaseStatus[]
+}> {
+  const worktreeRepositoryIds = new Set(worktrees.map((worktree) => worktree.repositoryId))
+  const relevantRepositories = repositories.filter((repository) =>
+    worktreeRepositoryIds.has(repository.id)
+  )
+  const snapshots = new Map<string, BaseBranchSnapshot>()
+  const statuses: (RepositoryBaseStatus | undefined)[] = new Array(
+    relevantRepositories.length
+  ).fill(undefined)
+  let cursor = 0
+
+  // One fetch per repository, rather than one fetch per worktree. Keep a small
+  // bound so opening a large workspace does not start dozens of network calls.
+  const CONCURRENCY = 4
+  const worker = async () => {
+    while (cursor < relevantRepositories.length) {
+      const index = cursor++
+      const repository = relevantRepositories[index]!
+      const snapshot = await refreshBaseBranch(
+        statusCwd(repository, worktrees),
+        repository.baseBranch || 'main'
+      )
+      snapshots.set(repository.id, snapshot)
+      statuses[index] = toRepositoryBaseStatus(repository, snapshot)
+    }
+  }
+
+  await Promise.all(
+    Array.from(
+      { length: Math.min(CONCURRENCY, relevantRepositories.length) },
+      () => worker()
+    )
+  )
+
+  return {
+    snapshots,
+    statuses: statuses.filter((status): status is RepositoryBaseStatus => status !== undefined),
+  }
+}
+
 ipcMain.handle(
   'get-worktree-statuses',
   async (event, args: { worktrees: Worktree[]; repositories: Repository[] }) => {
@@ -357,6 +419,10 @@ ipcMain.handle(
     const emitProgress = () => event.sender.send('status-progress', { current: done, total })
     emitProgress()
 
+    const { snapshots: baseSnapshots, statuses: baseStatuses } =
+      await refreshRepositoryBaseStatuses(args.repositories, args.worktrees)
+    const repositoriesById = new Map(args.repositories.map((repository) => [repository.id, repository]))
+
     // Fetch statuses with bounded concurrency — each does git + a network PR
     // lookup, so a few in flight is much faster than one at a time, while
     // reporting progress as each completes.
@@ -367,15 +433,17 @@ ipcMain.handle(
       while (cursor < total) {
         const i = cursor++
         const worktree = args.worktrees[i]!
-        const repo = args.repositories.find((r) => r.id === worktree.repositoryId)
+        const repo = repositoriesById.get(worktree.repositoryId)
         if (repo) {
           const pullRequest = await refreshPullRequest(worktree, repo, globalTokens).catch(
             () => undefined
           )
+          const baseSnapshot = baseSnapshots.get(repo.id)
           results[i] = await getWorktreeStatus({
             worktree,
             repository: repo,
             pullRequest: pullRequest ?? null,
+            ...(baseSnapshot ? { baseSnapshot } : {}),
           }).catch(() => null)
         }
         done++
@@ -383,7 +451,10 @@ ipcMain.handle(
       }
     }
     await Promise.all(Array.from({ length: Math.min(CONCURRENCY, total) }, () => worker()))
-    return results.filter((s): s is WorktreeStatus => s !== null)
+    return {
+      statuses: results.filter((s): s is WorktreeStatus => s !== null),
+      baseStatuses,
+    }
   }
 )
 

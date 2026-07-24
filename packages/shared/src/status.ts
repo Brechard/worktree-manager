@@ -1,4 +1,11 @@
-import type { PullRequest, Repository, SafetyResult, Worktree, WorktreeStatus } from '@worktree/contracts'
+import type {
+  PullRequest,
+  Repository,
+  RepositoryBaseStatus,
+  SafetyResult,
+  Worktree,
+  WorktreeStatus,
+} from '@worktree/contracts'
 import {
   countUnpushed,
   getAheadBehind,
@@ -10,29 +17,29 @@ import {
   getUnpushedCommits,
   hasRemote,
   isMerged,
-  refExists,
 } from './git.js'
+import type { BaseBranchSnapshot } from './base.js'
 import { lookupPullRequest } from './providers.js'
 
 export interface StatusOptions {
   worktree: Worktree
   repository: Repository
   pullRequest?: PullRequest | null
+  /** One repository-level ref snapshot shared by all of its worktrees. */
+  baseSnapshot?: BaseBranchSnapshot
 }
 
 export async function getWorktreeStatus(options: StatusOptions): Promise<WorktreeStatus> {
-  const { worktree, repository, pullRequest } = options
+  const { worktree, repository, pullRequest, baseSnapshot } = options
   const cwd = worktree.path
+  const baseBranch = baseSnapshot?.baseBranch ?? repository.baseBranch ?? 'main'
 
-  const baseBranch = repository.baseBranch || 'main'
-  const resolvedBase = (await refExists(cwd, `refs/heads/${baseBranch}`))
-    ? baseBranch
-    : 'main'
+  const resolvedBase = baseSnapshot?.baseBranch ?? baseBranch
 
   const [status, aheadBehind, merged, unpushed, branch, headCommit] = await Promise.all([
     getStatusPorcelain(cwd),
     getAheadBehind(cwd).catch(() => ({ ahead: 0, behind: 0, hasUpstream: false })),
-    isMerged(cwd, baseBranch).catch(() => false),
+    isMerged(cwd, baseBranch, baseSnapshot?.mergeRef).catch(() => false),
     countUnpushed(cwd).catch(() => 0),
     getCurrentBranch(cwd).catch(() => 'HEAD'),
     getHeadCommit(cwd).catch(() => undefined),
@@ -58,6 +65,24 @@ export async function getWorktreeStatus(options: StatusOptions): Promise<Worktre
   }
 
   return worktreeStatus
+}
+
+/** Convert the internal ref snapshot into the renderer-safe repository status. */
+export function toRepositoryBaseStatus(
+  repository: Repository,
+  snapshot: BaseBranchSnapshot
+): RepositoryBaseStatus {
+  return {
+    repositoryId: repository.id,
+    baseBranch: snapshot.baseBranch,
+    state: snapshot.state,
+    localExists: snapshot.localExists,
+    remoteExists: snapshot.remoteExists,
+    ahead: snapshot.ahead,
+    behind: snapshot.behind,
+    ...(snapshot.fetchedAt !== undefined ? { fetchedAt: snapshot.fetchedAt } : {}),
+    ...(snapshot.fetchError ? { fetchError: snapshot.fetchError } : {}),
+  }
 }
 
 export async function refreshPullRequest(

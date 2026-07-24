@@ -1,4 +1,5 @@
 export * from './git.js'
+export * from './base.js'
 export * from './worktree.js'
 export * from './status.js'
 export * from './providers.js'

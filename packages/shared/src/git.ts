@@ -163,10 +163,18 @@ export async function resolveBaseBranch(
   return undefined
 }
 
-export async function isMerged(cwd: string, baseBranch: string): Promise<boolean> {
-  const resolvedBase = await resolveBaseBranch(cwd, baseBranch)
+export async function isMerged(
+  cwd: string,
+  baseBranch: string,
+  preferredRef?: string
+): Promise<boolean> {
+  const resolvedBase = preferredRef ?? (await resolveBaseBranch(cwd, baseBranch))
   if (!resolvedBase) return false
-  const baseRef = resolvedBase.startsWith('origin/') ? resolvedBase : `refs/heads/${resolvedBase}`
+  const baseRef = resolvedBase.startsWith('refs/')
+    ? resolvedBase
+    : resolvedBase.startsWith('origin/')
+      ? `refs/remotes/${resolvedBase}`
+      : `refs/heads/${resolvedBase}`
   const { exitCode } = await runGit(cwd, ['merge-base', '--is-ancestor', 'HEAD', baseRef])
   return exitCode === 0
 }

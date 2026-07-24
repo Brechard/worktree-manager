@@ -18,6 +18,8 @@ import { ProjectConfigModal } from './ProjectConfigModal'
 import { TitleBar } from './TitleBar'
 import { cn } from '../lib/utils'
 import { EDITOR_OPTIONS, editorLabel, shortenPath } from '../lib/paths'
+import type { RepositoryBaseStatus } from '@worktree/contracts'
+import { BaseBranchStatus } from './BaseBranchStatus'
 
 export function Dashboard() {
   const {
@@ -44,13 +46,24 @@ export function Dashboard() {
   const [statusProgress, setStatusProgress] = useState<{ current: number; total: number } | null>(
     null
   )
+  const [baseStatuses, setBaseStatuses] = useState<Record<string, RepositoryBaseStatus>>({})
+  const [baseUpdating, setBaseUpdating] = useState(false)
 
   const loadStatuses = async () => {
     if (worktrees.length === 0) return
     setLoading(true)
     try {
-      const newStatuses = await api.getWorktreeStatuses({ worktrees, repositories })
-      setStatuses(newStatuses)
+      const result = await api.getWorktreeStatuses({ worktrees, repositories })
+      setStatuses(result.statuses)
+      setBaseStatuses(
+        result.baseStatuses.reduce(
+          (acc, status) => {
+            acc[status.repositoryId] = status
+            return acc
+          },
+          {} as Record<string, RepositoryBaseStatus>
+        )
+      )
     } finally {
       setLoading(false)
       setStatusProgress(null)
@@ -176,6 +189,24 @@ export function Dashboard() {
   }, [repositories, projectSearch])
 
   const selectedRepo = repositories.find((r) => r.id === selectedRepositoryId) ?? null
+
+  const updateSelectedBase = async () => {
+    if (!selectedRepo || baseUpdating) return
+    setBaseUpdating(true)
+    setActionError(null)
+    try {
+      const result = await api.updateBaseBranch({
+        path: selectedRepo.path,
+        baseBranch: selectedRepo.baseBranch || 'main',
+      })
+      if (!result.success) setActionError(result.output)
+      await loadStatuses()
+    } catch (err) {
+      setActionError(String(err))
+    } finally {
+      setBaseUpdating(false)
+    }
+  }
 
   const effectiveEditor = selectedRepo?.preferredEditor || settings?.defaultEditor || 'cursor'
 
@@ -435,6 +466,14 @@ export function Dashboard() {
                   >
                     {shortenPath(selectedRepo.path)}
                   </p>
+                  <div className="mt-2">
+                    <BaseBranchStatus
+                      status={baseStatuses[selectedRepo.id]}
+                      busy={loading || baseUpdating}
+                      onRefresh={loadStatuses}
+                      onUpdate={updateSelectedBase}
+                    />
+                  </div>
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2">

@@ -11,6 +11,7 @@ import type {
   DetectedToken,
   ProviderConfig,
   ProviderType,
+  WorktreeStatusesResult,
 } from '@worktree/contracts'
 
 const api = {
@@ -36,7 +37,7 @@ const api = {
   getWorktreeStatuses: (args: {
     worktrees: Worktree[]
     repositories: Repository[]
-  }): Promise<WorktreeStatus[]> => ipcRenderer.invoke('get-worktree-statuses', args),
+  }): Promise<WorktreeStatusesResult> => ipcRenderer.invoke('get-worktree-statuses', args),
 
   getWorktreeDetails: (args: {
     worktree: Worktree

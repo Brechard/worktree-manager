@@ -51,6 +51,31 @@ export const pullRequestSchema = z.object({
 })
 export type PullRequest = z.infer<typeof pullRequestSchema>
 
+export const baseBranchSyncStateSchema = z.enum([
+  'current',
+  'behind',
+  'ahead',
+  'diverged',
+  'local-only',
+  'remote-only',
+  'unknown',
+])
+export type BaseBranchSyncState = z.infer<typeof baseBranchSyncStateSchema>
+
+/** Freshness of a repository's local base branch relative to origin. */
+export const repositoryBaseStatusSchema = z.object({
+  repositoryId: z.string(),
+  baseBranch: z.string(),
+  state: baseBranchSyncStateSchema,
+  localExists: z.boolean(),
+  remoteExists: z.boolean(),
+  ahead: z.number().int().nonnegative().default(0),
+  behind: z.number().int().nonnegative().default(0),
+  fetchedAt: z.number().optional(),
+  fetchError: z.string().optional(),
+})
+export type RepositoryBaseStatus = z.infer<typeof repositoryBaseStatusSchema>
+
 export const worktreeStatusSchema = z.object({
   worktreeId: z.string(),
   dirty: z.boolean().default(false),
@@ -72,6 +97,12 @@ export const worktreeStatusSchema = z.object({
   detached: z.boolean().optional(),
 })
 export type WorktreeStatus = z.infer<typeof worktreeStatusSchema>
+
+export const worktreeStatusesResultSchema = z.object({
+  statuses: z.array(worktreeStatusSchema),
+  baseStatuses: z.array(repositoryBaseStatusSchema),
+})
+export type WorktreeStatusesResult = z.infer<typeof worktreeStatusesResultSchema>
 
 export const scanProgressSchema = z.object({
   total: z.number().int(),

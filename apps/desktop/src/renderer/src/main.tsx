@@ -2,7 +2,11 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import App from './App'
+import { applyTheme } from './lib/theme'
 import './index.css'
+
+// Default to following the OS until the persisted setting loads (avoids a flash).
+applyTheme('system')
 
 const queryClient = new QueryClient({
   defaultOptions: {

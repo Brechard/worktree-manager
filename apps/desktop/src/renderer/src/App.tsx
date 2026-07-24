@@ -5,6 +5,7 @@ import { Onboarding } from './components/Onboarding'
 import { Dashboard } from './components/Dashboard'
 import { Settings } from './components/Settings'
 import { TitleBar } from './components/TitleBar'
+import { applyTheme } from './lib/theme'
 
 export default function App() {
   const { view, setView, setSettings, setRepositories, setWorktrees, setSelectedRepositoryId } =
@@ -25,6 +26,7 @@ export default function App() {
           api.getWorktrees(),
         ])
         if (cancelled) return
+        applyTheme(settings.theme)
         setSettings(settings)
         setRepositories(repositories)
         setWorktrees(worktrees)

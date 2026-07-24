@@ -15,14 +15,16 @@ import type {
 
 const api = {
   getSettings: (): Promise<AppSettings> => ipcRenderer.invoke('get-settings'),
-  setSettings: (settings: AppSettings): Promise<void> => ipcRenderer.invoke('set-settings', settings),
+  setSettings: (settings: AppSettings): Promise<void> =>
+    ipcRenderer.invoke('set-settings', settings),
 
   getRepositories: (): Promise<Repository[]> => ipcRenderer.invoke('get-repositories'),
   setRepositories: (repositories: Repository[]): Promise<void> =>
     ipcRenderer.invoke('set-repositories', repositories),
 
   getWorktrees: (): Promise<Worktree[]> => ipcRenderer.invoke('get-worktrees'),
-  setWorktrees: (worktrees: Worktree[]): Promise<void> => ipcRenderer.invoke('set-worktrees', worktrees),
+  setWorktrees: (worktrees: Worktree[]): Promise<void> =>
+    ipcRenderer.invoke('set-worktrees', worktrees),
 
   discoverWorktrees: (options: {
     roots: string[]
@@ -41,10 +43,8 @@ const api = {
     repository: Repository
   }): Promise<WorktreeDetails> => ipcRenderer.invoke('get-worktree-details', args),
 
-  evaluateSafety: (args: {
-    worktree: Worktree
-    status: WorktreeStatus
-  }): Promise<SafetyResult> => ipcRenderer.invoke('evaluate-safety', args),
+  evaluateSafety: (args: { worktree: Worktree; status: WorktreeStatus }): Promise<SafetyResult> =>
+    ipcRenderer.invoke('evaluate-safety', args),
 
   getFileDiff: (args: {
     path: string
@@ -53,6 +53,13 @@ const api = {
     untracked?: boolean
     fullContext?: boolean
   }): Promise<string> => ipcRenderer.invoke('get-file-diff', args),
+
+  discardFile: (args: {
+    path: string
+    filePath: string
+    untracked?: boolean
+  }): Promise<{ success: boolean; output: string }> =>
+    ipcRenderer.invoke('discard-file', args),
 
   pullWorktree: (path: string): Promise<{ success: boolean; output: string }> =>
     ipcRenderer.invoke('pull-worktree', path),
@@ -63,6 +70,12 @@ const api = {
   pushWorktree: (path: string): Promise<{ success: boolean; output: string }> =>
     ipcRenderer.invoke('push-worktree', path),
 
+  updateBaseBranch: (args: {
+    path: string
+    baseBranch: string
+  }): Promise<{ success: boolean; output: string }> =>
+    ipcRenderer.invoke('update-base-branch', args),
+
   commitWorktree: (args: {
     path: string
     message: string
@@ -71,29 +84,46 @@ const api = {
 
   openDirectoryDialog: (): Promise<string[]> => ipcRenderer.invoke('open-directory-dialog'),
 
-  openInEditor: (args: { path: string; editor?: string }): Promise<{ success: boolean; error?: string }> =>
-    ipcRenderer.invoke('open-in-editor', args),
-  openInTerminal: (args: { path: string; terminal?: string }): Promise<{ success: boolean; error?: string }> =>
-    ipcRenderer.invoke('open-in-terminal', args),
+  openInEditor: (args: {
+    path: string
+    editor?: string
+  }): Promise<{ success: boolean; error?: string }> => ipcRenderer.invoke('open-in-editor', args),
+  openInTerminal: (args: {
+    path: string
+    terminal?: string
+  }): Promise<{ success: boolean; error?: string }> => ipcRenderer.invoke('open-in-terminal', args),
   openInFileManager: (path: string): Promise<{ success: boolean; error?: string }> =>
     ipcRenderer.invoke('open-in-file-manager', path),
   trashWorktree: (path: string): Promise<boolean> => ipcRenderer.invoke('trash-worktree', path),
   openExternal: (url: string): Promise<void> => ipcRenderer.invoke('open-external', url),
 
   encryptToken: (token: string): Promise<string> => ipcRenderer.invoke('encrypt-token', token),
-  decryptToken: (encrypted: string): Promise<string> => ipcRenderer.invoke('decrypt-token', encrypted),
+  decryptToken: (encrypted: string): Promise<string> =>
+    ipcRenderer.invoke('decrypt-token', encrypted),
 
   detectProviderToken: (provider: ProviderType): Promise<DetectedToken | undefined> =>
     ipcRenderer.invoke('detect-provider-token', provider),
   parseRemoteProvider: (remoteUrl: string): Promise<ProviderConfig | undefined> =>
     ipcRenderer.invoke('parse-remote-provider', remoteUrl),
 
-  onScanProgress: (
-    callback: (progress: ScanProgress) => void
-  ): (() => void) => {
+  getRepoBranches: (path: string): Promise<{ branches: string[]; defaultBranch?: string }> =>
+    ipcRenderer.invoke('get-repo-branches', path),
+
+  getAppVersion: (): Promise<string> => ipcRenderer.invoke('get-app-version'),
+
+  onScanProgress: (callback: (progress: ScanProgress) => void): (() => void) => {
     const listener = (_: unknown, progress: ScanProgress) => callback(progress)
     ipcRenderer.on('scan-progress', listener)
     return () => ipcRenderer.removeListener('scan-progress', listener)
+  },
+
+  onStatusProgress: (
+    callback: (progress: { current: number; total: number }) => void
+  ): (() => void) => {
+    const listener = (_: unknown, progress: { current: number; total: number }) =>
+      callback(progress)
+    ipcRenderer.on('status-progress', listener)
+    return () => ipcRenderer.removeListener('status-progress', listener)
   },
 }
 

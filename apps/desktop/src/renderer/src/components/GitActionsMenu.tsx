@@ -5,27 +5,35 @@ import {
   Download,
   Upload,
   RefreshCw,
+  RefreshCcw,
   ChevronDown,
   Loader2,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 
 interface GitActionsMenuProps {
-  busy: 'editor' | 'terminal' | 'folder' | 'pull' | 'rebase' | 'push' | 'commit' | null
+  busy:
+    'editor' | 'terminal' | 'folder' | 'pull' | 'rebase' | 'push' | 'commit' | 'updateBase' | null
+  branch: string
+  baseBranch: string
   showCommitInput: boolean
   onPull: () => void
   onRebase: () => void
   onPush: () => void
   onCommit: () => void
+  onUpdateBaseBranch: () => void
 }
 
 export function GitActionsMenu({
   busy,
+  branch,
+  baseBranch,
   showCommitInput,
   onPull,
   onRebase,
   onPush,
   onCommit,
+  onUpdateBaseBranch,
 }: GitActionsMenuProps) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -46,11 +54,14 @@ export function GitActionsMenu({
   return (
     <div ref={ref} className="relative">
       <button
+        type="button"
         onClick={() => setOpen((v) => !v)}
         title="Git actions"
         className={cn(
           'inline-flex items-center gap-1 rounded-md px-2 py-1 text-[10px] font-medium transition-colors',
-          open ? 'bg-primary text-primary-foreground' : 'bg-muted/60 text-foreground hover:bg-accent'
+          open
+            ? 'bg-primary text-primary-foreground'
+            : 'bg-muted/60 text-foreground hover:bg-accent'
         )}
       >
         <GitBranch className="h-3 w-3" />
@@ -59,7 +70,22 @@ export function GitActionsMenu({
       </button>
       {open && (
         <div className="absolute right-0 z-10 mt-1 w-48 rounded-md border border-border bg-background p-1 shadow-2xl ring-1 ring-border">
+          {branch !== baseBranch && (
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false)
+                onUpdateBaseBranch()
+              }}
+              disabled={Boolean(busy)}
+              className={cn(itemClass, busy === 'updateBase' && 'bg-accent')}
+            >
+              {busy === 'updateBase' ? busyIcon : <RefreshCcw className="h-3.5 w-3.5" />}
+              Update {baseBranch}
+            </button>
+          )}
           <button
+            type="button"
             onClick={() => {
               setOpen(false)
               onPull()
@@ -71,6 +97,7 @@ export function GitActionsMenu({
             Pull fast-forward
           </button>
           <button
+            type="button"
             onClick={() => {
               setOpen(false)
               onRebase()
@@ -82,6 +109,7 @@ export function GitActionsMenu({
             Pull with rebase
           </button>
           <button
+            type="button"
             onClick={() => {
               setOpen(false)
               onPush()
@@ -93,6 +121,7 @@ export function GitActionsMenu({
             Push branch
           </button>
           <button
+            type="button"
             onClick={() => {
               setOpen(false)
               onCommit()

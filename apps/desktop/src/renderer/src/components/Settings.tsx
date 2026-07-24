@@ -1,22 +1,37 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { ArrowLeft, KeyRound, Loader2, Plus, X } from 'lucide-react'
 import { useAppStore } from '../store'
 import { api } from '../api'
 import { cn } from '../lib/utils'
 import { EDITOR_OPTIONS, TERMINAL_OPTIONS, shortenPath } from '../lib/paths'
+import { applyTheme, type Theme } from '../lib/theme'
 import { TitleBar } from './TitleBar'
 
 export function Settings() {
   const { settings, setSettings, setView } = useAppStore()
   const [editor, setEditor] = useState(settings?.defaultEditor ?? 'cursor')
   const [terminal, setTerminal] = useState(settings?.defaultTerminal ?? '')
-  const [theme, setTheme] = useState(settings?.theme ?? 'system')
+  const [theme, setTheme] = useState<Theme>(settings?.theme ?? 'system')
+
+  // Live-preview the theme as it's toggled.
+  const previewTheme = (t: Theme) => {
+    setTheme(t)
+    applyTheme(t)
+  }
   const [dirs, setDirs] = useState<string[]>(settings?.watchedDirectories ?? [])
   const [githubToken, setGithubToken] = useState(settings?.githubToken ?? '')
   const [azureToken, setAzureToken] = useState(settings?.azureToken ?? '')
   const [saving, setSaving] = useState(false)
   const [detecting, setDetecting] = useState<'github' | 'azure' | null>(null)
   const [tokenMsg, setTokenMsg] = useState<string | null>(null)
+  const [version, setVersion] = useState<string>('')
+
+  useEffect(() => {
+    api
+      .getAppVersion()
+      .then(setVersion)
+      .catch(() => {})
+  }, [])
 
   const addDir = async () => {
     const paths = await api.openDirectoryDialog()
@@ -48,22 +63,54 @@ export function Settings() {
     }
   }
 
+  const nextSettings = () => ({
+    watchedDirectories: dirs,
+    defaultEditor: editor,
+    theme,
+    ...(terminal ? { defaultTerminal: terminal } : {}),
+    ...(githubToken ? { githubToken } : {}),
+    ...(azureToken ? { azureToken } : {}),
+  })
+
+  const hasChanges = () => {
+    const current = nextSettings()
+    const prev = {
+      watchedDirectories: settings?.watchedDirectories ?? [],
+      defaultEditor: settings?.defaultEditor ?? 'cursor',
+      theme: settings?.theme ?? 'system',
+      defaultTerminal: settings?.defaultTerminal ?? '',
+      githubToken: settings?.githubToken ?? '',
+      azureToken: settings?.azureToken ?? '',
+    }
+    return (
+      JSON.stringify({ ...current, watchedDirectories: [...current.watchedDirectories].sort() }) !==
+      JSON.stringify({ ...prev, watchedDirectories: [...prev.watchedDirectories].sort() })
+    )
+  }
+
   const save = async () => {
     setSaving(true)
     try {
-      const next = {
-        watchedDirectories: dirs,
-        defaultEditor: editor,
-        theme,
-        ...(terminal ? { defaultTerminal: terminal } : {}),
-        ...(githubToken ? { githubToken } : {}),
-        ...(azureToken ? { azureToken } : {}),
-      }
+      const next = nextSettings()
       await api.setSettings(next)
       setSettings(next)
       setView('dashboard')
     } finally {
       setSaving(false)
+    }
+  }
+
+  const goBack = () => {
+    if (!hasChanges()) {
+      setView('dashboard')
+      return
+    }
+    const saveChanges = window.confirm('You have unsaved changes. Save before going back?')
+    if (saveChanges) {
+      void save()
+    } else {
+      applyTheme(settings?.theme ?? 'system')
+      setView('dashboard')
     }
   }
 
@@ -73,7 +120,7 @@ export function Settings() {
         title="Settings"
         trailing={
           <button
-            onClick={() => setView('dashboard')}
+            onClick={goBack}
             className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1.5 text-xs font-medium hover:bg-accent"
           >
             <ArrowLeft className="h-3.5 w-3.5" />
@@ -92,7 +139,7 @@ export function Settings() {
               {(['system', 'light', 'dark'] as const).map((t) => (
                 <button
                   key={t}
-                  onClick={() => setTheme(t)}
+                  onClick={() => previewTheme(t)}
                   className={cn(
                     'rounded-md border border-border px-3 py-1.5 text-sm capitalize',
                     theme === t ? 'bg-primary text-primary-foreground' : 'bg-card hover:bg-accent'
@@ -148,8 +195,8 @@ export function Settings() {
               Provider tokens
             </h2>
             <p className="mb-3 text-xs text-muted">
-              Used for PR lookup when a project has no token. GitHub/Azure org+repo are auto-detected
-              from git remotes.
+              Used for PR lookup when a project has no token. GitHub/Azure org+repo are
+              auto-detected from git remotes.
             </p>
             {tokenMsg && <p className="mb-2 text-xs text-muted">{tokenMsg}</p>}
             <div className="space-y-3">
@@ -243,7 +290,7 @@ export function Settings() {
         </div>
       </div>
 
-      <div className="border-t border-border px-6 py-3">
+      <div className="flex items-center justify-between border-t border-border px-6 py-3">
         <button
           onClick={save}
           disabled={saving}
@@ -251,6 +298,7 @@ export function Settings() {
         >
           {saving ? 'Saving…' : 'Save changes'}
         </button>
+        {version && <span className="text-xs text-muted">v{version}</span>}
       </div>
     </div>
   )

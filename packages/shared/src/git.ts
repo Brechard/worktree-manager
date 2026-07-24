@@ -107,6 +107,45 @@ export async function refExists(cwd: string, ref: string): Promise<boolean> {
   return exitCode === 0
 }
 
+export async function getDefaultBranch(cwd: string): Promise<string | undefined> {
+  const { stdout, exitCode } = await runGit(cwd, [
+    'symbolic-ref',
+    '--short',
+    'refs/remotes/origin/HEAD',
+  ])
+  if (exitCode === 0 && stdout.startsWith('origin/')) return stdout.slice('origin/'.length)
+  if (await refExists(cwd, 'refs/remotes/origin/main')) return 'main'
+  if (await refExists(cwd, 'refs/remotes/origin/master')) return 'master'
+  return undefined
+}
+
+export async function getBranches(cwd: string): Promise<string[]> {
+  const { stdout, exitCode } = await runGit(cwd, ['branch', '--format=%(refname:short)'])
+  const local =
+    exitCode === 0
+      ? stdout
+          .split('\n')
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : []
+
+  const { stdout: remoteOut, exitCode: remoteExit } = await runGit(cwd, [
+    'branch',
+    '-r',
+    '--format=%(refname:short)',
+  ])
+  const remote =
+    remoteExit === 0
+      ? remoteOut
+          .split('\n')
+          .map((s) => s.trim())
+          .filter((s) => s.startsWith('origin/') && !s.endsWith('/HEAD'))
+          .map((s) => s.slice('origin/'.length))
+      : []
+
+  return Array.from(new Set([...local, ...remote])).sort((a, b) => a.localeCompare(b))
+}
+
 export async function resolveBaseBranch(
   cwd: string,
   preferred: string
@@ -116,6 +155,11 @@ export async function resolveBaseBranch(
     if (await refExists(cwd, `refs/heads/${branch}`)) return branch
     if (await refExists(cwd, `refs/remotes/origin/${branch}`)) return `origin/${branch}`
   }
+
+  const defaultBranch = await getDefaultBranch(cwd)
+  if (!defaultBranch) return undefined
+  if (await refExists(cwd, `refs/heads/${defaultBranch}`)) return defaultBranch
+  if (await refExists(cwd, `refs/remotes/origin/${defaultBranch}`)) return `origin/${defaultBranch}`
   return undefined
 }
 
@@ -123,12 +167,7 @@ export async function isMerged(cwd: string, baseBranch: string): Promise<boolean
   const resolvedBase = await resolveBaseBranch(cwd, baseBranch)
   if (!resolvedBase) return false
   const baseRef = resolvedBase.startsWith('origin/') ? resolvedBase : `refs/heads/${resolvedBase}`
-  const { exitCode } = await runGit(cwd, [
-    'merge-base',
-    '--is-ancestor',
-    'HEAD',
-    baseRef,
-  ])
+  const { exitCode } = await runGit(cwd, ['merge-base', '--is-ancestor', 'HEAD', baseRef])
   return exitCode === 0
 }
 
@@ -283,7 +322,8 @@ export async function getFileDiff(
       ['diff', '--no-color', '--no-index', '-p', ...contextArgs, '--', '/dev/null', filePath],
       { raw: true }
     )
-    if (exitCode !== 0 && exitCode !== 1) throw new Error(stderr || `Could not load diff for ${filePath}`)
+    if (exitCode !== 0 && exitCode !== 1)
+      throw new Error(stderr || `Could not load diff for ${filePath}`)
     return stdout
   }
   // Use --submodule=short so submodule changes show the two commit hashes.
@@ -293,6 +333,37 @@ export async function getFileDiff(
   const { stdout, exitCode, stderr } = await runGit(cwd, args, { raw: true })
   if (exitCode !== 0) throw new Error(stderr || `Could not load diff for ${filePath}`)
   return stdout
+}
+
+/**
+ * Roll a single file back to its committed state. For a tracked file this
+ * restores both the index and the working tree to HEAD (discarding staged and
+ * unstaged changes). For an untracked file it removes the newly-added file.
+ */
+export async function discardFile(
+  cwd: string,
+  filePath: string,
+  untracked = false
+): Promise<GitActionResult> {
+  if (untracked) {
+    const { stdout, stderr, exitCode } = await runGit(cwd, ['clean', '-f', '--', filePath])
+    return {
+      success: exitCode === 0,
+      output: exitCode === 0 ? stdout || `Removed ${filePath}` : stderr || `Could not remove ${filePath}`,
+    }
+  }
+  const { stdout, stderr, exitCode } = await runGit(cwd, [
+    'restore',
+    '--source=HEAD',
+    '--staged',
+    '--worktree',
+    '--',
+    filePath,
+  ])
+  return {
+    success: exitCode === 0,
+    output: exitCode === 0 ? stdout || `Reverted ${filePath}` : stderr || `Could not revert ${filePath}`,
+  }
 }
 
 export async function pullWorktree(cwd: string): Promise<GitActionResult> {
@@ -330,5 +401,37 @@ export async function commitWorktree(
   return {
     success: exitCode === 0,
     output: exitCode === 0 ? stdout || 'Committed' : stderr || 'Commit failed',
+  }
+}
+
+export async function updateBaseBranch(cwd: string, baseBranch: string): Promise<GitActionResult> {
+  let base = baseBranch
+  const localBaseExists = await refExists(cwd, `refs/heads/${base}`)
+  const remoteBaseExists = await refExists(cwd, `refs/remotes/origin/${base}`)
+  if (!localBaseExists && !remoteBaseExists) {
+    const defaultBranch = await getDefaultBranch(cwd)
+    if (!defaultBranch) {
+      return { success: false, output: 'Could not determine a base branch to update' }
+    }
+    base = defaultBranch
+  }
+
+  const current = await getCurrentBranch(cwd)
+  if (current === base) {
+    return pullWorktree(cwd)
+  }
+
+  const { exitCode } = await runGit(cwd, ['fetch', 'origin', `${base}:${base}`])
+  if (exitCode === 0) {
+    return { success: true, output: `Updated ${base} from origin` }
+  }
+
+  const { stderr, exitCode: fallbackExitCode } = await runGit(cwd, ['fetch', 'origin', base])
+  return {
+    success: fallbackExitCode === 0,
+    output:
+      fallbackExitCode === 0
+        ? `Updated origin/${base} (local ${base} left unchanged — it may be checked out elsewhere or diverged)`
+        : stderr || `Failed to update ${base}`,
   }
 }

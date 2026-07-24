@@ -15,6 +15,7 @@ import {
   FilePlus,
   FileClock,
   Eye,
+  Undo2,
 } from 'lucide-react'
 import type { Repository, Worktree, WorktreeStatus, WorktreeDetails } from '@worktree/contracts'
 import { cn } from '../lib/utils'
@@ -42,7 +43,9 @@ export function WorktreeRow({
   onActionError,
   onRefresh,
 }: WorktreeRowProps) {
-  const [busy, setBusy] = useState<'editor' | 'terminal' | 'folder' | 'pull' | 'rebase' | 'push' | 'commit' | null>(null)
+  const [busy, setBusy] = useState<
+    'editor' | 'terminal' | 'folder' | 'pull' | 'rebase' | 'push' | 'commit' | 'updateBase' | null
+  >(null)
   const [expanded, setExpanded] = useState(false)
   const [details, setDetails] = useState<WorktreeDetails | null>(null)
   const [loadingDetails, setLoadingDetails] = useState(false)
@@ -75,9 +78,9 @@ export function WorktreeRow({
     }
   }, [expanded, worktree, repository, details, onActionError])
 
-  const gitActions = new Set(['pull', 'rebase', 'push', 'commit'])
+  const gitActions = new Set(['pull', 'rebase', 'push', 'commit', 'updateBase'])
   const run = async (
-    kind: 'editor' | 'terminal' | 'folder' | 'pull' | 'rebase' | 'push' | 'commit',
+    kind: 'editor' | 'terminal' | 'folder' | 'pull' | 'rebase' | 'push' | 'commit' | 'updateBase',
     fn: () => Promise<{ success?: boolean; error?: string; output?: string } | string | void>
   ) => {
     setBusy(kind)
@@ -92,7 +95,10 @@ export function WorktreeRow({
         if (expanded) {
           setDetails(null)
           setSelectedFile(null)
-          api.getWorktreeDetails({ worktree, repository }).then(setDetails).catch((err) => onActionError?.(String(err)))
+          api
+            .getWorktreeDetails({ worktree, repository })
+            .then(setDetails)
+            .catch((err) => onActionError?.(String(err)))
         }
       }
     } catch (err) {
@@ -108,8 +114,7 @@ export function WorktreeRow({
   const handleTerminal = () =>
     run('terminal', () => window.api.openInTerminal({ path: worktree.path }))
 
-  const handleFolder = () =>
-    run('folder', () => window.api.openInFileManager(worktree.path))
+  const handleFolder = () => run('folder', () => window.api.openInFileManager(worktree.path))
 
   const handlePr = async () => {
     if (status?.pullRequest?.url) {
@@ -120,10 +125,16 @@ export function WorktreeRow({
   const handlePull = () => run('pull', () => window.api.pullWorktree(worktree.path))
   const handleRebase = () => run('rebase', () => window.api.rebaseWorktree(worktree.path))
   const handlePush = () => run('push', () => window.api.pushWorktree(worktree.path))
+  const handleUpdateBaseBranch = () =>
+    run('updateBase', () =>
+      window.api.updateBaseBranch({ path: worktree.path, baseBranch: repository.baseBranch })
+    )
 
   const handleCommit = (all = false) => {
     if (!commitMessage.trim()) return
-    run('commit', () => window.api.commitWorktree({ path: worktree.path, message: commitMessage, all }))
+    run('commit', () =>
+      window.api.commitWorktree({ path: worktree.path, message: commitMessage, all })
+    )
     setCommitMessage('')
     setShowCommitInput(false)
   }
@@ -139,8 +150,20 @@ export function WorktreeRow({
     setLoadingDiff(true)
     try {
       const [diff, fullDiff] = await Promise.all([
-        api.getFileDiff({ path: worktree.path, filePath: file.path, staged, untracked, fullContext: false }),
-        api.getFileDiff({ path: worktree.path, filePath: file.path, staged, untracked, fullContext: true }),
+        api.getFileDiff({
+          path: worktree.path,
+          filePath: file.path,
+          staged,
+          untracked,
+          fullContext: false,
+        }),
+        api.getFileDiff({
+          path: worktree.path,
+          filePath: file.path,
+          staged,
+          untracked,
+          fullContext: true,
+        }),
       ])
       setSelectedFile({ path: file.path, staged, untracked, diff, fullDiff })
     } catch (err) {
@@ -150,6 +173,37 @@ export function WorktreeRow({
       setLoadingDiff(false)
     }
   }
+
+  const handleDiscardFile = async (file: { path: string; status: string }) => {
+    const untracked = details?.untrackedFiles.some((f) => f.path === file.path) ?? false
+    setBusy('commit')
+    try {
+      const res = await window.api.discardFile({
+        path: worktree.path,
+        filePath: file.path,
+        untracked,
+      })
+      if (res.success === false) {
+        onActionError?.(res.output || 'Discard failed')
+        return
+      }
+      setSelectedFile(null)
+      const d = await api.getWorktreeDetails({ worktree, repository })
+      setDetails(d)
+      onRefresh?.()
+    } catch (err) {
+      onActionError?.(String(err))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  // Prefer live git state from the latest status refresh over the branch/head
+  // captured at the last full scan — those go stale (e.g. a worktree scanned
+  // while detached, then moved onto a branch, would otherwise read "detached").
+  const liveBranch = status?.branch ?? worktree.branch
+  const detached = status?.detached ?? liveBranch === 'HEAD'
+  const headCommit = status?.headCommit ?? worktree.headCommit
 
   const safe =
     !status ||
@@ -176,17 +230,17 @@ export function WorktreeRow({
                 <ChevronRight className="h-3 w-3 text-primary" />
               )}
               <GitBranch className="h-3 w-3 text-primary" />
-              {worktree.branch === 'HEAD' ? (
+              {detached ? (
                 <>
                   detached HEAD
-                  {worktree.headCommit && <span className="text-muted">@{worktree.headCommit}</span>}
+                  {headCommit && <span className="text-muted">@{headCommit}</span>}
                 </>
               ) : (
-                worktree.branch
+                liveBranch
               )}
             </span>
             {worktree.isMain && (
-              <span className="rounded-md bg-primary/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary">
+              <span className="rounded-md bg-highlight/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-highlight">
                 Primary
               </span>
             )}
@@ -201,13 +255,14 @@ export function WorktreeRow({
                   status.pullRequest.state === 'open' && 'bg-success/15 text-success',
                   status.pullRequest.state === 'draft' && 'bg-muted/20 text-muted',
                   status.pullRequest.state === 'closed' && 'bg-muted/20 text-muted',
-                  status.pullRequest.state === 'merged' && 'bg-primary/15 text-primary'
+                  status.pullRequest.state === 'merged' && 'bg-merged/15 text-merged'
                 )}
                 title={status.pullRequest.title}
               >
                 <ExternalLink className="h-3 w-3 shrink-0" />
                 <span className="truncate">
-                  {status.pullRequest.state === 'merged' ? 'merged' : status.pullRequest.state} · {status.pullRequest.title}
+                  {status.pullRequest.state === 'merged' ? 'merged' : status.pullRequest.state} ·{' '}
+                  {status.pullRequest.title}
                 </span>
               </button>
             )}
@@ -223,10 +278,10 @@ export function WorktreeRow({
           </p>
 
           <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted">
-            {worktree.headCommit && (
+            {headCommit && (
               <span className="inline-flex items-center gap-1">
                 <GitCommit className="h-3 w-3" />
-                {worktree.headCommit}
+                {headCommit}
               </span>
             )}
             {worktree.lastModified && (
@@ -245,13 +300,13 @@ export function WorktreeRow({
                   </span>
                 )}
                 {status.behind > 0 && <span>{status.behind} behind</span>}
-                {worktree.branch === 'HEAD' ? (
+                {detached ? (
                   <span className="text-muted">detached</span>
-                ) : !status.mergedIntoBase && worktree.branch !== status.baseBranch ? (
+                ) : !status.mergedIntoBase && liveBranch !== status.baseBranch ? (
                   <span className="text-warning">unmerged</span>
                 ) : (
                   status.mergedIntoBase &&
-                  !worktree.isMain && <span className="text-success">merged</span>
+                  !worktree.isMain && <span className="font-medium text-merged">merged</span>
                 )}
               </>
             )}
@@ -261,6 +316,8 @@ export function WorktreeRow({
         <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
           <GitActionsMenu
             busy={busy}
+            branch={liveBranch}
+            baseBranch={repository.baseBranch}
             showCommitInput={showCommitInput}
             onPull={handlePull}
             onRebase={handleRebase}
@@ -269,6 +326,7 @@ export function WorktreeRow({
               setExpanded(true)
               setShowCommitInput(true)
             }}
+            onUpdateBaseBranch={handleUpdateBaseBranch}
           />
           <IconButton
             title={`Open in ${editorLabel(editorId)}`}
@@ -338,6 +396,8 @@ export function WorktreeRow({
                 files={details.dirtyFiles}
                 color="text-warning"
                 onFileClick={handleFileClick}
+                onDiscard={handleDiscardFile}
+                discarding={busy === 'commit'}
                 selectedFile={selectedFile}
                 loadingDiff={loadingDiff}
               />
@@ -347,6 +407,8 @@ export function WorktreeRow({
                 files={details.stagedFiles}
                 color="text-success"
                 onFileClick={handleFileClick}
+                onDiscard={handleDiscardFile}
+                discarding={busy === 'commit'}
                 selectedFile={selectedFile}
                 loadingDiff={loadingDiff}
               />
@@ -356,12 +418,17 @@ export function WorktreeRow({
                 files={details.untrackedFiles}
                 color="text-muted"
                 onFileClick={handleFileClick}
+                onDiscard={handleDiscardFile}
+                discarding={busy === 'commit'}
                 selectedFile={selectedFile}
                 loadingDiff={loadingDiff}
               />
               <CommitList title="Unpushed commits" commits={details.unpushedCommits} />
               {details.behindCommits.length > 0 && (
-                <CommitList title={`Behind ${details.baseBranch}`} commits={details.behindCommits} />
+                <CommitList
+                  title={`Behind ${details.baseBranch}`}
+                  commits={details.behindCommits}
+                />
               )}
               {details.dirtyFiles.length === 0 &&
                 details.stagedFiles.length === 0 &&
@@ -386,6 +453,8 @@ function FileList({
   files,
   color,
   onFileClick,
+  onDiscard,
+  discarding,
   selectedFile,
   loadingDiff,
 }: {
@@ -394,10 +463,23 @@ function FileList({
   files: { path: string; status: string }[]
   color?: string
   onFileClick?: (file: { path: string; status: string }) => void | Promise<void>
-  selectedFile?: { path: string; diff: string; fullDiff: string; staged?: boolean; untracked?: boolean } | null
+  onDiscard?: (file: { path: string; status: string }) => void | Promise<void>
+  discarding?: boolean
+  selectedFile?: {
+    path: string
+    diff: string
+    fullDiff: string
+    staged?: boolean
+    untracked?: boolean
+  } | null
   loadingDiff?: boolean | undefined
 }) {
+  const [confirmDiscard, setConfirmDiscard] = useState(false)
+  useEffect(() => {
+    setConfirmDiscard(false)
+  }, [selectedFile?.path])
   if (files.length === 0) return null
+  const untracked = title === 'Untracked'
   return (
     <div>
       <h4 className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted">
@@ -413,7 +495,9 @@ function FileList({
                 title={`${f.status} ${f.path}`}
                 className={cn(
                   'flex flex-1 items-center gap-2 truncate rounded px-1.5 py-0.5 font-mono text-[11px] text-left',
-                  selectedFile?.path === f.path ? 'bg-accent text-foreground' : 'text-foreground/90 hover:bg-accent/50'
+                  selectedFile?.path === f.path
+                    ? 'bg-accent text-foreground'
+                    : 'text-foreground/90 hover:bg-accent/50'
                 )}
               >
                 <span className={cn('shrink-0 font-bold', color)}>{f.status}</span>
@@ -438,7 +522,53 @@ function FileList({
                     Loading diff…
                   </div>
                 ) : (
-                  <DiffViewer diff={selectedFile.diff} fullDiff={selectedFile.fullDiff} />
+                  <DiffViewer
+                    diff={selectedFile.diff}
+                    fullDiff={selectedFile.fullDiff}
+                    actions={
+                      onDiscard ? (
+                        confirmDiscard ? (
+                          <>
+                            <span className="text-[11px] text-muted">
+                              {untracked ? 'Delete this new file?' : 'Discard all changes?'}
+                            </span>
+                            <button
+                              onClick={() => {
+                                setConfirmDiscard(false)
+                                void onDiscard(f)
+                              }}
+                              disabled={discarding}
+                              className="inline-flex items-center gap-1 rounded-md bg-destructive/15 px-2 py-0.5 text-[11px] font-medium text-destructive hover:bg-destructive/25 disabled:opacity-50"
+                            >
+                              {discarding ? (
+                                <Loader2 className="h-3 w-3 animate-spin" />
+                              ) : (
+                                <Undo2 className="h-3 w-3" />
+                              )}
+                              {untracked ? 'Delete' : 'Discard'}
+                            </button>
+                            <button
+                              onClick={() => setConfirmDiscard(false)}
+                              className="rounded-md px-2 py-0.5 text-[11px] text-muted hover:text-foreground"
+                            >
+                              Cancel
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            onClick={() => setConfirmDiscard(true)}
+                            title={
+                              untracked ? 'Delete this new file' : 'Discard changes to this file'
+                            }
+                            className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] text-muted transition-colors hover:bg-destructive/15 hover:text-destructive"
+                          >
+                            <Undo2 className="h-3 w-3" />
+                            {untracked ? 'Delete file' : 'Discard changes'}
+                          </button>
+                        )
+                      ) : undefined
+                    }
+                  />
                 )}
               </div>
             )}

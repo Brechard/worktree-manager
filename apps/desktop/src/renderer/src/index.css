@@ -1,32 +1,73 @@
 @import "tailwindcss";
 
+/*
+ * Default palette: Tokyo Night (deepened), an MIT-licensed open-source dark theme.
+ * https://github.com/tokyo-night/tokyo-night-vscode-theme
+ */
 @theme {
-  --color-primary: #3b82f6;
-  --color-primary-foreground: #ffffff;
-  --color-destructive: #ef4444;
-  --color-destructive-foreground: #ffffff;
-  --color-success: #22c55e;
-  --color-warning: #eab308;
-  --color-muted: #94a3b8;
-  --color-background: #0b1220;
-  --color-foreground: #e8eef9;
-  --color-card: #121a2b;
-  --color-border: #243044;
-  --color-sidebar: #0e1626;
-  --color-accent: #1a2740;
-  --color-row-hover: #162033;
+  --color-primary: #7aa2f7;
+  --color-primary-foreground: #0a0b10;
+  --color-destructive: #f7768e;
+  --color-destructive-foreground: #0a0b10;
+  --color-success: #9ece6a;
+  --color-warning: #e0af68;
+  /* Tokyo Night purple — "merged" (done / safe to delete). */
+  --color-merged: #bb9af7;
+  /* Tokyo Night cyan — "primary" (the main worktree). */
+  --color-highlight: #7dcfff;
+  --color-muted: #6f77a0;
+  --color-background: #0a0b0f;
+  --color-foreground: #c6ccf0;
+  --color-card: #111219;
+  --color-border: #21232f;
+  --color-sidebar: #07080c;
+  --color-accent: #191b27;
+  --color-row-hover: #13141d;
 }
 
+:root {
+  color-scheme: dark;
+}
+
+/* Light palette (Tokyo Night Day inspired). */
+:root[data-theme='light'] {
+  color-scheme: light;
+  --color-primary: #2e7de9;
+  --color-primary-foreground: #ffffff;
+  --color-destructive: #f52a65;
+  --color-destructive-foreground: #ffffff;
+  --color-success: #587539;
+  --color-warning: #8c6c3e;
+  --color-merged: #9854f1;
+  --color-highlight: #007197;
+  --color-muted: #6a7089;
+  --color-background: #e9eaf0;
+  --color-foreground: #2a2e3f;
+  --color-card: #ffffff;
+  --color-border: #d3d7e2;
+  --color-sidebar: #e1e3ea;
+  --color-accent: #d9deef;
+  --color-row-hover: #eef0f6;
+}
+
+/* "System" follows the OS preference. */
 @media (prefers-color-scheme: light) {
-  :root {
-    --color-background: #f4f6fa;
-    --color-foreground: #0f172a;
+  :root[data-theme='system'] {
+    color-scheme: light;
+    --color-primary: #2e7de9;
+    --color-primary-foreground: #ffffff;
+    --color-destructive: #f52a65;
+    --color-destructive-foreground: #ffffff;
+    --color-success: #587539;
+    --color-warning: #8c6c3e;
+    --color-muted: #6a7089;
+    --color-background: #e9eaf0;
+    --color-foreground: #2a2e3f;
     --color-card: #ffffff;
-    --color-border: #e2e8f0;
-    --color-sidebar: #eef2f7;
-    --color-accent: #e8eef7;
-    --color-row-hover: #f1f5f9;
-    --color-muted: #64748b;
+    --color-border: #d3d7e2;
+    --color-sidebar: #e1e3ea;
+    --color-accent: #d9deef;
+    --color-row-hover: #eef0f6;
   }
 }
 

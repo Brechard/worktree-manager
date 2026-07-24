@@ -1,16 +1,28 @@
-import { app, BrowserWindow, dialog, ipcMain, nativeImage, nativeTheme, safeStorage, shell } from 'electron'
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  nativeImage,
+  nativeTheme,
+  safeStorage,
+  shell,
+} from 'electron'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { existsSync } from 'node:fs'
-import { readFile, writeFile, mkdir } from 'node:fs/promises'
+import { readFile, writeFile, mkdir, copyFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { z } from 'zod'
 import {
   commitWorktree,
   detectProviderToken,
+  discardFile,
   discoverRepositories,
   evaluateSafety,
   getFileDiff,
+  getBranches,
+  getDefaultBranch,
   getWorktreeDetails,
   getWorktreeStatus,
   parseProviderFromRemoteUrl,
@@ -19,6 +31,7 @@ import {
   rebaseWorktree,
   refreshPullRequest,
   runCommand,
+  updateBaseBranch,
 } from '@worktree/shared'
 import {
   appSettingsSchema,
@@ -36,6 +49,15 @@ import {
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 
+// Give the app a real name (otherwise it shows as "Electron" in the menu bar,
+// dock, and window title while running unpackaged). Must be set before the app
+// is ready and before any getPath('userData') call so the config path is stable.
+app.setName('Worktree Manager')
+
+// Animate mouse-wheel scrolling instead of stepping line-by-line (feels much
+// smoother with a physical mouse on macOS). Must be set before app is ready.
+app.commandLine.appendSwitch('enable-smooth-scrolling', 'true')
+
 const isDev = !app.isPackaged
 
 const AI_AGENT_DIRS = ['.t3', '.claude', '.codex', '.devin', '.aider', '.windsurf', '.cursor']
@@ -45,6 +67,66 @@ function getAiAgentRoots(): string[] {
   return AI_AGENT_DIRS.map((d) => join(home, d)).filter(existsSync)
 }
 
+/** Drop roots that live inside another root so we don't scan the same tree twice. */
+function dedupeRoots(roots: string[]): string[] {
+  const cleaned = Array.from(
+    new Set(roots.map((r) => r.replace(/\/+$/, '')).filter((r) => r.length > 0))
+  ).sort((a, b) => a.length - b.length)
+  const kept: string[] = []
+  for (const root of cleaned) {
+    if (kept.some((k) => root === k || root.startsWith(k + '/'))) continue
+    kept.push(root)
+  }
+  return kept
+}
+
+/** Seconds-since-epoch `exp` claim of a JWT, or undefined for non-JWTs. */
+function jwtExpiry(token: string): number | undefined {
+  const parts = token.split('.')
+  if (parts.length < 2) return undefined
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1]!, 'base64url').toString('utf-8'))
+    return typeof payload.exp === 'number' ? payload.exp : undefined
+  } catch {
+    return undefined
+  }
+}
+
+// Azure AAD access tokens (from `az account get-access-token`) expire ~hourly.
+// Cache a fresh one in memory and re-fetch via the CLI when it's about to expire
+// so PR lookups keep working instead of silently going stale.
+let azureTokenCache: { token: string; exp: number } | null = null
+
+function tokenIsFresh(token: string | undefined): boolean {
+  if (!token) return false
+  const exp = jwtExpiry(token)
+  if (exp === undefined) return true // opaque PAT — assume long-lived
+  return exp * 1000 > Date.now() + 60_000
+}
+
+async function resolveAzureToken(stored?: string): Promise<string | undefined> {
+  if (tokenIsFresh(stored)) return stored
+  if (azureTokenCache && azureTokenCache.exp * 1000 > Date.now() + 60_000) {
+    return azureTokenCache.token
+  }
+  const detected = await detectProviderToken('azure').catch(() => undefined)
+  if (detected?.token) {
+    const exp = jwtExpiry(detected.token) ?? Math.floor(Date.now() / 1000) + 3000
+    azureTokenCache = { token: detected.token, exp }
+    // Persist so the Settings screen and next launch start from a fresh token.
+    try {
+      const settings = await loadSettings()
+      if (settings.azureToken !== detected.token) {
+        await saveSettings({ ...settings, azureToken: detected.token })
+      }
+    } catch {
+      // best-effort persistence
+    }
+    return detected.token
+  }
+  return stored // fall back to the (possibly expired) stored token
+}
+
 const configDir = () => join(app.getPath('userData'), 'config')
 const configPath = () => join(configDir(), 'settings.json')
 const reposPath = () => join(configDir(), 'repositories.json')
@@ -52,6 +134,25 @@ const worktreesPath = () => join(configDir(), 'worktrees.json')
 
 async function ensureConfigDir() {
   await mkdir(configDir(), { recursive: true })
+}
+
+// Earlier builds ran unpackaged with the default app name, storing config under
+// `<appData>/@worktree/desktop`. Now that we set a stable name ("Worktree
+// Manager") the userData dir changes, so carry the old config over once.
+async function migrateLegacyConfig() {
+  try {
+    if (existsSync(configPath())) return
+    const legacyDir = join(app.getPath('appData'), '@worktree', 'desktop', 'config')
+    if (!existsSync(join(legacyDir, 'settings.json'))) return
+    await ensureConfigDir()
+    for (const file of ['settings.json', 'repositories.json', 'worktrees.json']) {
+      const src = join(legacyDir, file)
+      if (existsSync(src)) await copyFile(src, join(configDir(), file))
+    }
+    console.log('[worktree] migrated legacy config from', legacyDir)
+  } catch (err) {
+    console.error('[worktree] legacy config migration failed', err)
+  }
 }
 
 async function loadSettings(): Promise<AppSettings> {
@@ -179,7 +280,8 @@ async function createWindow() {
   }
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  await migrateLegacyConfig()
   nativeTheme.themeSource = 'system'
 
   const iconPath = getIconPath()
@@ -223,7 +325,7 @@ ipcMain.handle(
       })
     }
 
-    const roots = Array.from(new Set([...(options.roots ?? []), ...getAiAgentRoots()]))
+    const roots = dedupeRoots([...(options.roots ?? []), ...getAiAgentRoots()])
 
     const result = await discoverRepositories({
       roots,
@@ -242,32 +344,55 @@ ipcMain.handle('cancel-scan', async () => {
 
 ipcMain.handle(
   'get-worktree-statuses',
-  async (_, args: { worktrees: Worktree[]; repositories: Repository[] }) => {
+  async (event, args: { worktrees: Worktree[]; repositories: Repository[] }) => {
     const settings = await loadSettings()
+    const azureToken = await resolveAzureToken(settings.azureToken)
     const globalTokens = {
       ...(settings.githubToken ? { github: settings.githubToken } : {}),
-      ...(settings.azureToken ? { azure: settings.azureToken } : {}),
+      ...(azureToken ? { azure: azureToken } : {}),
     }
-    const statuses: WorktreeStatus[] = []
-    for (const worktree of args.worktrees) {
-      const repo = args.repositories.find((r) => r.id === worktree.repositoryId)
-      if (!repo) continue
 
-      const pullRequest = await refreshPullRequest(worktree, repo, globalTokens).catch(() => undefined)
-      const status = await getWorktreeStatus({
-        worktree,
-        repository: repo,
-        pullRequest: pullRequest ?? null,
-      })
-      statuses.push(status)
+    const total = args.worktrees.length
+    let done = 0
+    const emitProgress = () => event.sender.send('status-progress', { current: done, total })
+    emitProgress()
+
+    // Fetch statuses with bounded concurrency — each does git + a network PR
+    // lookup, so a few in flight is much faster than one at a time, while
+    // reporting progress as each completes.
+    const CONCURRENCY = 6
+    const results: (WorktreeStatus | null)[] = new Array(total).fill(null)
+    let cursor = 0
+    const worker = async () => {
+      while (cursor < total) {
+        const i = cursor++
+        const worktree = args.worktrees[i]!
+        const repo = args.repositories.find((r) => r.id === worktree.repositoryId)
+        if (repo) {
+          const pullRequest = await refreshPullRequest(worktree, repo, globalTokens).catch(
+            () => undefined
+          )
+          results[i] = await getWorktreeStatus({
+            worktree,
+            repository: repo,
+            pullRequest: pullRequest ?? null,
+          }).catch(() => null)
+        }
+        done++
+        emitProgress()
+      }
     }
-    return statuses
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, total) }, () => worker()))
+    return results.filter((s): s is WorktreeStatus => s !== null)
   }
 )
 
-ipcMain.handle('evaluate-safety', async (_, args: { worktree: Worktree; status: WorktreeStatus }) => {
-  return evaluateSafety(args.worktree, args.status)
-})
+ipcMain.handle(
+  'evaluate-safety',
+  async (_, args: { worktree: Worktree; status: WorktreeStatus }) => {
+    return evaluateSafety(args.worktree, args.status)
+  }
+)
 
 ipcMain.handle(
   'get-worktree-details',
@@ -278,13 +403,33 @@ ipcMain.handle(
 
 ipcMain.handle(
   'get-file-diff',
-  async (_, args: { path: string; filePath: string; staged?: boolean; untracked?: boolean; fullContext?: boolean }) => {
+  async (
+    _,
+    args: {
+      path: string
+      filePath: string
+      staged?: boolean
+      untracked?: boolean
+      fullContext?: boolean
+    }
+  ) => {
     return getFileDiff(args.path, args.filePath, args.staged, args.untracked, args.fullContext)
+  }
+)
+
+ipcMain.handle(
+  'discard-file',
+  async (_, args: { path: string; filePath: string; untracked?: boolean }) => {
+    return discardFile(args.path, args.filePath, args.untracked)
   }
 )
 
 ipcMain.handle('pull-worktree', async (_, path: string) => {
   return pullWorktree(path)
+})
+
+ipcMain.handle('update-base-branch', async (_, args: { path: string; baseBranch: string }) => {
+  return updateBaseBranch(args.path, args.baseBranch)
 })
 
 ipcMain.handle('rebase-worktree', async (_, path: string) => {
@@ -315,11 +460,14 @@ ipcMain.handle('open-in-editor', async (_, { path, editor }: { path: string; edi
   return openInEditor(path, editorId)
 })
 
-ipcMain.handle('open-in-terminal', async (_, { path, terminal }: { path: string; terminal?: string }) => {
-  const settings = await loadSettings()
-  const term = terminal || settings.defaultTerminal
-  return openTerminalAt(path, term)
-})
+ipcMain.handle(
+  'open-in-terminal',
+  async (_, { path, terminal }: { path: string; terminal?: string }) => {
+    const settings = await loadSettings()
+    const term = terminal || settings.defaultTerminal
+    return openTerminalAt(path, term)
+  }
+)
 
 ipcMain.handle('open-in-file-manager', async (_, path: string) => {
   const err = await shell.openPath(path)
@@ -340,6 +488,16 @@ ipcMain.handle('detect-provider-token', async (_, provider: 'github' | 'azure') 
 
 ipcMain.handle('parse-remote-provider', async (_, remoteUrl: string) => {
   return parseProviderFromRemoteUrl(remoteUrl)
+})
+
+ipcMain.handle('get-app-version', () => app.getVersion())
+
+ipcMain.handle('get-repo-branches', async (_, path: string) => {
+  const [branches, defaultBranch] = await Promise.all([
+    getBranches(path).catch(() => [] as string[]),
+    getDefaultBranch(path).catch(() => undefined),
+  ])
+  return { branches, defaultBranch }
 })
 
 ipcMain.handle('encrypt-token', async (_, token: string) => {

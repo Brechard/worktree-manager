@@ -2,6 +2,7 @@ import { readdir, stat, readFile, readlink } from 'node:fs/promises'
 import { basename, join, dirname, isAbsolute, resolve } from 'node:path'
 import type { Repository, Worktree } from '@worktree/contracts'
 import {
+  getDefaultBranch,
   getDefaultRemoteUrl,
   getHeadCommit,
   getTopLevel,
@@ -21,6 +22,22 @@ const SKIP_DIRS = new Set([
   '.turbo',
   'coverage',
   'release',
+  // Large, repo-less build/dependency trees — never contain repos we care about.
+  'Pods',
+  'Carthage',
+  'DerivedData',
+  '.build',
+  '.dart_tool',
+  '.gradle',
+  'obj',
+  'bin',
+  'target',
+  'venv',
+  '.venv',
+  '__pycache__',
+  '.pub-cache',
+  '.expo',
+  '.cache',
 ])
 
 export interface DiscoverOptions {
@@ -42,43 +59,91 @@ export async function discoverRepositories(
   const foundDirs: string[] = []
   const mainRepoPaths = new Map<string, string>() // repo root -> one discovered path
 
-  let total = 0
-  let current = 0
+  let scanned = 0
   let found = 0
+  let lastReport = 0
 
-  const reportProgress = async (currentPath?: string) => {
-    if (onProgress) {
-      await onProgress({ total, current, found, ...(currentPath ? { currentPath } : {}) })
+  // Throttle progress: the renderer only needs a heartbeat, not one event per
+  // directory (there can be thousands, and each is an IPC round-trip).
+  const reportProgress = (currentPath?: string, force = false) => {
+    if (!onProgress) return
+    const now = Date.now()
+    if (!force && now - lastReport < 80) return
+    lastReport = now
+    void onProgress({
+      total: scanned,
+      current: scanned,
+      found,
+      ...(currentPath ? { currentPath } : {}),
+    })
+  }
+
+  // Bounded-concurrency traversal. We limit only the readdir I/O (never held
+  // across recursion, so no deadlock) and track outstanding work with a
+  // pending counter that resolves `done` once the whole tree is walked.
+  const CONCURRENCY = 24
+  let active = 0
+  const waiters: Array<() => void> = []
+  const acquire = () =>
+    new Promise<void>((res) => {
+      if (active < CONCURRENCY) {
+        active++
+        res()
+      } else {
+        waiters.push(res)
+      }
+    })
+  const release = () => {
+    active--
+    const next = waiters.shift()
+    if (next) {
+      active++
+      next()
     }
   }
 
-  const scan = async (root: string, depth: number) => {
-    if (shouldCancel?.()) return
-    if (depth > maxDepth) return
+  let pending = 0
+  let markDone: () => void
+  const done = new Promise<void>((res) => {
+    markDone = res
+  })
+
+  // A directory is a repo (main worktree or linked worktree) when it contains a
+  // `.git` entry — detecting it from the directory's own readdir avoids an extra
+  // stat per directory and lets us stop before descending into the repo.
+  const visit = async (dir: string, depth: number): Promise<void> => {
+    if (shouldCancel?.() || depth > maxDepth) return
+    await acquire()
     let entries
     try {
-      entries = await readdir(root, { withFileTypes: true })
+      entries = await readdir(dir, { withFileTypes: true })
     } catch {
+      release()
       return
+    }
+    release()
+
+    scanned++
+    reportProgress(dir)
+
+    if (entries.some((e) => e.name === '.git')) {
+      found++
+      foundDirs.push(dir)
+      reportProgress(dir, true)
+      return // don't recurse into a repo (skips submodules, worktrees, etc.)
     }
 
     for (const entry of entries) {
       if (shouldCancel?.()) return
       if (!entry.isDirectory() && !entry.isSymbolicLink()) continue
       const name = entry.name
-      if (name.startsWith('.') && name !== '.git') continue
-      if (SKIP_DIRS.has(name)) continue
+      if (name.startsWith('.') || SKIP_DIRS.has(name)) continue
 
-      let fullPath = join(root, name)
+      let fullPath = join(dir, name)
       if (entry.isSymbolicLink()) {
-        let target: string
         try {
-          target = await readlink(fullPath)
-        } catch {
-          continue
-        }
-        const absoluteTarget = isAbsolute(target) ? target : resolve(root, target)
-        try {
+          const target = await readlink(fullPath)
+          const absoluteTarget = isAbsolute(target) ? target : resolve(dir, target)
           const s = await stat(absoluteTarget)
           if (!s.isDirectory()) continue
           fullPath = absoluteTarget
@@ -86,35 +151,24 @@ export async function discoverRepositories(
           continue
         }
       }
-
-      current++
-      await reportProgress(fullPath)
-
-      let hasGit = false
-      try {
-        const gitPath = join(fullPath, '.git')
-        await stat(gitPath)
-        hasGit = true
-      } catch {
-        // continue
-      }
-
-      if (hasGit) {
-        found++
-        foundDirs.push(fullPath)
-        await reportProgress(fullPath)
-        // Don't recurse into a git repo to avoid submodules etc.
-        continue
-      }
-
-      await scan(fullPath, depth + 1)
+      schedule(fullPath, depth + 1)
     }
   }
 
-  total = roots.length
-  for (const root of roots) {
-    await scan(root, 0)
+  const schedule = (dir: string, depth: number) => {
+    pending++
+    void visit(dir, depth).finally(() => {
+      pending--
+      if (pending === 0) markDone()
+    })
   }
+
+  if (roots.length === 0) {
+    markDone!()
+  } else {
+    for (const root of roots) schedule(root, 0)
+  }
+  await done
 
   // Resolve to main repo paths and de-duplicate
   for (const dir of foundDirs) {
@@ -127,35 +181,45 @@ export async function discoverRepositories(
   const repositories: Repository[] = []
   const worktrees: Worktree[] = []
 
-  for (const [repoPath] of mainRepoPaths) {
-    if (shouldCancel?.()) break
-    const entries = await getWorktreeList(repoPath)
-    if (entries.length === 0) continue
+  // Build each repo's metadata in parallel — independent git calls per repo.
+  const built = await Promise.all(
+    Array.from(mainRepoPaths.keys()).map(async (repoPath) => {
+      if (shouldCancel?.()) return null
+      const entries = await getWorktreeList(repoPath).catch(() => [])
+      if (entries.length === 0) return null
 
-    const remoteUrl = await getDefaultRemoteUrl(repoPath).catch(() => undefined)
-    const provider = remoteUrl ? parseProviderFromRemoteUrl(remoteUrl) : undefined
-    const repo: Repository = {
-      id: stableId(repoPath),
-      name: basename(repoPath),
-      path: repoPath,
-      baseBranch: 'main',
-      remoteUrl,
-      favorite: false,
-      ...(provider ? { provider } : {}),
-    }
-    repositories.push(repo)
+      const [remoteUrl, defaultBranch] = await Promise.all([
+        getDefaultRemoteUrl(repoPath).catch(() => undefined),
+        getDefaultBranch(repoPath).catch(() => undefined),
+      ])
+      const provider = remoteUrl ? parseProviderFromRemoteUrl(remoteUrl) : undefined
+      const repo: Repository = {
+        id: stableId(repoPath),
+        name: basename(repoPath),
+        path: repoPath,
+        baseBranch: defaultBranch || 'main',
+        remoteUrl,
+        favorite: false,
+        ...(provider ? { provider } : {}),
+      }
+      const repoWorktrees = await Promise.all(entries.map((entry) => buildWorktree(entry, repo.id)))
+      return { repo, repoWorktrees }
+    })
+  )
 
-    for (const entry of entries) {
-      const worktree = await buildWorktree(entry, repo.id)
-      worktrees.push(worktree)
-    }
+  for (const item of built) {
+    if (!item) continue
+    repositories.push(item.repo)
+    worktrees.push(...item.repoWorktrees)
   }
 
   return { repositories, worktrees }
 }
 
 async function buildWorktree(entry: WorktreeEntry, repoId: string): Promise<Worktree> {
-  const headCommit = entry.head ? entry.head.slice(0, 7) : await getHeadCommit(entry.path).catch(() => undefined)
+  const headCommit = entry.head
+    ? entry.head.slice(0, 7)
+    : await getHeadCommit(entry.path).catch(() => undefined)
   let lastModified: number | undefined
   try {
     const s = await stat(entry.path)
@@ -164,8 +228,9 @@ async function buildWorktree(entry: WorktreeEntry, repoId: string): Promise<Work
     // ignore
   }
 
-  const branch = entry.detached ? 'HEAD' : entry.branch ?? 'HEAD'
-  const isMain = !entry.detached && branch !== 'HEAD' && !entry.bare && (await isMainWorktree(entry.path))
+  const branch = entry.detached ? 'HEAD' : (entry.branch ?? 'HEAD')
+  const isMain =
+    !entry.detached && branch !== 'HEAD' && !entry.bare && (await isMainWorktree(entry.path))
 
   return {
     id: stableId(entry.path),

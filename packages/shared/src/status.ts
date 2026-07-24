@@ -3,6 +3,8 @@ import {
   countUnpushed,
   getAheadBehind,
   getBehindCommits,
+  getCurrentBranch,
+  getHeadCommit,
   getStatusFiles,
   getStatusPorcelain,
   getUnpushedCommits,
@@ -27,14 +29,17 @@ export async function getWorktreeStatus(options: StatusOptions): Promise<Worktre
     ? baseBranch
     : 'main'
 
-  const [status, aheadBehind, merged, unpushed] = await Promise.all([
+  const [status, aheadBehind, merged, unpushed, branch, headCommit] = await Promise.all([
     getStatusPorcelain(cwd),
     getAheadBehind(cwd).catch(() => ({ ahead: 0, behind: 0, hasUpstream: false })),
     isMerged(cwd, baseBranch).catch(() => false),
     countUnpushed(cwd).catch(() => 0),
+    getCurrentBranch(cwd).catch(() => 'HEAD'),
+    getHeadCommit(cwd).catch(() => undefined),
   ])
 
   const hasRemoteConfigured = await hasRemote(cwd).catch(() => false)
+  const detached = branch === 'HEAD'
 
   const worktreeStatus: WorktreeStatus = {
     worktreeId: worktree.id,
@@ -46,6 +51,9 @@ export async function getWorktreeStatus(options: StatusOptions): Promise<Worktre
     mergedIntoBase: merged,
     baseBranch: resolvedBase,
     hasOpenPR: pullRequest?.state === 'open' || pullRequest?.state === 'draft',
+    branch,
+    detached,
+    ...(headCommit ? { headCommit } : {}),
     ...(pullRequest ? { pullRequest } : {}),
   }
 

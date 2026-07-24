@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { cn } from '../lib/utils'
 
 type DiffLine = {
@@ -87,7 +87,15 @@ export function parseDiff(diff: string): DiffLine[] {
   return lines
 }
 
-export function DiffViewer({ diff, fullDiff }: { diff: string; fullDiff: string }) {
+export function DiffViewer({
+  diff,
+  fullDiff,
+  actions,
+}: {
+  diff: string
+  fullDiff: string
+  actions?: ReactNode
+}) {
   const [mode, setMode] = useState<'unified' | 'split'>('unified')
   const [context, setContext] = useState<'diff' | 'full'>('diff')
   const source = context === 'full' ? fullDiff : diff
@@ -96,7 +104,9 @@ export function DiffViewer({ diff, fullDiff }: { diff: string; fullDiff: string 
   const toggleClass = (active: boolean) =>
     cn(
       'rounded-md px-2 py-0.5 text-[10px] font-medium transition-colors',
-      active ? 'bg-primary text-primary-foreground' : 'bg-muted hover:bg-accent'
+      active
+        ? 'bg-primary text-primary-foreground shadow-sm'
+        : 'text-muted hover:text-foreground'
     )
 
   const cellClass = (type: DiffLine['type']) =>
@@ -117,7 +127,7 @@ export function DiffViewer({ diff, fullDiff }: { diff: string; fullDiff: string 
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2">
-        <div className="flex items-center gap-1 rounded-md border border-border bg-background p-0.5">
+        <div className="inline-flex items-center gap-0.5 rounded-lg bg-accent p-0.5">
           <button onClick={() => setMode('unified')} className={toggleClass(mode === 'unified')}>
             Unified
           </button>
@@ -125,7 +135,7 @@ export function DiffViewer({ diff, fullDiff }: { diff: string; fullDiff: string 
             Side by side
           </button>
         </div>
-        <div className="flex items-center gap-1 rounded-md border border-border bg-background p-0.5">
+        <div className="inline-flex items-center gap-0.5 rounded-lg bg-accent p-0.5">
           <button onClick={() => setContext('diff')} className={toggleClass(context === 'diff')}>
             Diff only
           </button>
@@ -133,6 +143,7 @@ export function DiffViewer({ diff, fullDiff }: { diff: string; fullDiff: string 
             Whole file
           </button>
         </div>
+        {actions && <div className="ml-auto flex items-center gap-2">{actions}</div>}
       </div>
 
       {!source.trim() && <p className="text-[10px] text-muted">No diff to display.</p>}

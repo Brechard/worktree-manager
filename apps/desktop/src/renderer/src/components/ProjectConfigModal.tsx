@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { KeyRound, Loader2, Sparkles, X } from 'lucide-react'
+import { useEffect, useState, type MouseEvent } from 'react'
+import { AlertTriangle, KeyRound, Loader2, Sparkles, X } from 'lucide-react'
 import type { ProviderConfig, Repository } from '@worktree/contracts'
 import { api } from '../api'
 import { EDITOR_OPTIONS, editorLabel, shortenPath } from '../lib/paths'
@@ -13,6 +13,9 @@ interface ProjectConfigModalProps {
 
 export function ProjectConfigModal({ repository, onClose, onSave }: ProjectConfigModalProps) {
   const [baseBranch, setBaseBranch] = useState(repository.baseBranch || 'main')
+  const [branches, setBranches] = useState<string[]>([])
+  const [defaultBranch, setDefaultBranch] = useState<string | undefined>(undefined)
+  const [loadingBranches, setLoadingBranches] = useState(false)
   const [preferredEditor, setPreferredEditor] = useState(repository.preferredEditor ?? '')
   const [favorite, setFavorite] = useState(Boolean(repository.favorite))
   const [providerType, setProviderType] = useState<ProviderConfig['type'] | ''>(
@@ -43,7 +46,8 @@ export function ProjectConfigModal({ repository, onClose, onSave }: ProjectConfi
       }
       const parsed = await api.parseRemoteProvider(repository.remoteUrl)
       if (cancelled || !parsed) {
-        if (!cancelled) setAutoNote('Could not parse provider from remote URL. Fill manually if needed.')
+        if (!cancelled)
+          setAutoNote('Could not parse provider from remote URL. Fill manually if needed.')
         return
       }
       setProviderType(parsed.type)
@@ -60,6 +64,31 @@ export function ProjectConfigModal({ repository, onClose, onSave }: ProjectConfi
       cancelled = true
     }
   }, [repository.remoteUrl, repository.provider])
+
+  // Load the repo's branches so the base branch is a dropdown, defaulting to the
+  // branch `origin/HEAD` points at rather than a free-text guess.
+  useEffect(() => {
+    let cancelled = false
+    setLoadingBranches(true)
+    api
+      .getRepoBranches(repository.path)
+      .then(({ branches: list, defaultBranch: detected }) => {
+        if (cancelled) return
+        setBranches(list)
+        setDefaultBranch(detected)
+        // If this repo was never explicitly configured, adopt the detected default.
+        if (detected && !repository.baseBranch) setBaseBranch(detected)
+      })
+      .catch(() => {
+        // leave the free-text fallback in place
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingBranches(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [repository.path, repository.baseBranch])
 
   const detectToken = async () => {
     if (!providerType) return
@@ -80,6 +109,23 @@ export function ProjectConfigModal({ repository, onClose, onSave }: ProjectConfi
     } finally {
       setDetecting(false)
     }
+  }
+
+  // Consider the form "clean" if it still matches the saved repository (the
+  // detected default branch is auto-adopted on open and doesn't count as a change).
+  const initialBase = repository.baseBranch || defaultBranch || 'main'
+  const isDirty =
+    baseBranch !== initialBase ||
+    (preferredEditor || '') !== (repository.preferredEditor || '') ||
+    favorite !== Boolean(repository.favorite) ||
+    (providerType || '') !== (repository.provider?.type || '') ||
+    (organization || '') !== (repository.provider?.organization || '') ||
+    (project || '') !== (repository.provider?.project || '') ||
+    (repoName || '') !== (repository.provider?.repository || '') ||
+    (token || '') !== (repository.provider?.personalAccessToken || '')
+
+  const handleBackdropMouseDown = (e: MouseEvent) => {
+    if (e.target === e.currentTarget && !isDirty) onClose()
   }
 
   const handleSave = () => {
@@ -104,7 +150,10 @@ export function ProjectConfigModal({ repository, onClose, onSave }: ProjectConfi
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      onMouseDown={handleBackdropMouseDown}
+    >
       <div className="max-h-[90vh] w-full max-w-lg overflow-auto rounded-2xl border border-border bg-card p-6 shadow-lg">
         <div className="mb-4 flex items-center justify-between">
           <div>
@@ -120,14 +169,42 @@ export function ProjectConfigModal({ repository, onClose, onSave }: ProjectConfi
           <section className="space-y-3">
             <h3 className="text-xs font-semibold uppercase tracking-wider text-muted">General</h3>
             <div>
-              <label className="mb-1 block text-sm font-medium">Base branch</label>
-              <input
-                type="text"
+              <label className="mb-1 flex items-center gap-2 text-sm font-medium">
+                Base branch
+                {loadingBranches && <Loader2 className="h-3 w-3 animate-spin text-muted" />}
+              </label>
+              <select
                 value={baseBranch}
                 onChange={(e) => setBaseBranch(e.target.value)}
                 className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
-              />
-              <p className="mt-1 text-xs text-muted">Used to check merge status.</p>
+              >
+                {/* Keep the current value selectable even if it's not in the list. */}
+                {baseBranch && !branches.includes(baseBranch) && (
+                  <option value={baseBranch}>{baseBranch} (not found)</option>
+                )}
+                {branches.map((b) => (
+                  <option key={b} value={b}>
+                    {b}
+                    {b === defaultBranch ? ' — default' : ''}
+                  </option>
+                ))}
+              </select>
+              {defaultBranch && baseBranch !== defaultBranch ? (
+                <p className="mt-1 flex items-start gap-1.5 text-xs text-warning">
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  <span>
+                    The repository’s default branch is{' '}
+                    <span className="font-medium">{defaultBranch}</span>. Merge, ahead/behind, and
+                    “safe to delete” checks will use{' '}
+                    <span className="font-medium">{baseBranch}</span> instead.
+                  </span>
+                </p>
+              ) : (
+                <p className="mt-1 text-xs text-muted">
+                  Detected from <code className="text-[11px]">origin/HEAD</code>. Used to check
+                  merge status.
+                </p>
+              )}
             </div>
 
             <div>
@@ -167,7 +244,10 @@ export function ProjectConfigModal({ repository, onClose, onSave }: ProjectConfi
                 Pull requests
               </h3>
               {repository.remoteUrl && (
-                <span className="truncate font-mono text-[10px] text-muted" title={repository.remoteUrl}>
+                <span
+                  className="truncate font-mono text-[10px] text-muted"
+                  title={repository.remoteUrl}
+                >
                   {shortenPath(repository.remoteUrl)}
                 </span>
               )}
@@ -215,7 +295,7 @@ export function ProjectConfigModal({ repository, onClose, onSave }: ProjectConfi
                   <label className="mb-1 block text-sm font-medium">Repository</label>
                   <input
                     type="text"
-                    value={repoName.includes('/') ? repoName.split('/')[1] ?? repoName : repoName}
+                    value={repoName.includes('/') ? (repoName.split('/')[1] ?? repoName) : repoName}
                     onChange={(e) => {
                       const name = e.target.value
                       setRepoName(organization ? `${organization}/${name}` : name)
@@ -231,8 +311,8 @@ export function ProjectConfigModal({ repository, onClose, onSave }: ProjectConfi
             {providerType === 'azure' && (
               <div className="grid gap-3">
                 <p className="text-xs text-muted">
-                  Org, project, and repo are filled from <code className="text-[11px]">origin</code> when
-                  possible — you usually only need a PAT.
+                  Org, project, and repo are filled from <code className="text-[11px]">origin</code>{' '}
+                  when possible — you usually only need a PAT.
                 </p>
                 <div className="grid grid-cols-2 gap-2">
                   <div>

@@ -24,6 +24,7 @@ export function Dashboard() {
     repositories,
     worktrees,
     statuses,
+    scanProgress,
     selectedRepositoryId,
     settings,
     setStatuses,
@@ -40,6 +41,9 @@ export function Dashboard() {
   const [configRepoId, setConfigRepoId] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [scanning, setScanning] = useState(false)
+  const [statusProgress, setStatusProgress] = useState<{ current: number; total: number } | null>(
+    null
+  )
 
   const loadStatuses = async () => {
     if (worktrees.length === 0) return
@@ -49,6 +53,7 @@ export function Dashboard() {
       setStatuses(newStatuses)
     } finally {
       setLoading(false)
+      setStatusProgress(null)
     }
   }
 
@@ -57,22 +62,28 @@ export function Dashboard() {
     return remove
   }, [setScanProgress])
 
+  useEffect(() => {
+    const remove = api.onStatusProgress((progress) => setStatusProgress(progress))
+    return remove
+  }, [])
+
   const rescan = async () => {
     if (scanning || loading) return
     const roots = Array.from(
-      new Set([
-        ...(settings?.watchedDirectories ?? []),
-        ...repositories.map((r) => r.path),
-      ])
+      new Set([...(settings?.watchedDirectories ?? []), ...repositories.map((r) => r.path)])
     ).filter((root) => root.trim().length > 0)
     if (roots.length === 0) return
 
     setScanning(true)
-    setLoading(true)
+    setScanProgress({ total: roots.length, current: 0, found: 0 })
     setActionError(null)
+    console.info('[worktree] rescan:start', { roots: roots.length })
     try {
       const result = await api.discoverWorktrees({ roots, maxDepth: 5 })
-      if (result.cancelled) return
+      if (result.cancelled) {
+        console.info('[worktree] rescan:cancelled')
+        return
+      }
 
       const existingByPath = new Map(repositories.map((r) => [r.path, r]))
       const mergedRepos = result.repositories.map((r) => {
@@ -82,8 +93,12 @@ export function Dashboard() {
           ...r,
           favorite: prev.favorite ?? r.favorite,
           preferredEditor: prev.preferredEditor ?? r.preferredEditor,
-          baseBranch: prev.baseBranch || r.baseBranch,
-          provider: prev.provider?.personalAccessToken ? prev.provider : r.provider ?? prev.provider,
+          // Prefer the freshly detected default branch (e.g. `dev`) over a
+          // previously stored guess (older scans defaulted every repo to `main`).
+          baseBranch: r.baseBranch || prev.baseBranch,
+          provider: prev.provider?.personalAccessToken
+            ? prev.provider
+            : (r.provider ?? prev.provider),
         }
       })
 
@@ -92,16 +107,20 @@ export function Dashboard() {
       )
       const mergedWorktrees = [...keptWorktrees, ...result.worktrees]
 
-      await Promise.all([
-        api.setRepositories(mergedRepos),
-        api.setWorktrees(mergedWorktrees),
-      ])
+      await Promise.all([api.setRepositories(mergedRepos), api.setWorktrees(mergedWorktrees)])
       setRepositories(mergedRepos)
       setWorktrees(mergedWorktrees)
+      console.info('[worktree] rescan:done', {
+        repositories: mergedRepos.length,
+        worktrees: mergedWorktrees.length,
+      })
     } catch (err) {
+      console.error('[worktree] rescan:error', err)
       setActionError(String(err))
     } finally {
       setScanning(false)
+      setScanProgress(null)
+      setLoading(false)
     }
     await loadStatuses()
   }
@@ -129,7 +148,7 @@ export function Dashboard() {
       .find((r) => r.favorite)
     const fallback = validLast
       ? repositories.find((r) => r.id === last)!
-      : firstFavorite ?? repositories[0]!
+      : (firstFavorite ?? repositories[0]!)
     setSelectedRepositoryId(fallback.id)
   }, [repositories, selectedRepositoryId, setSelectedRepositoryId, settings])
 
@@ -158,8 +177,7 @@ export function Dashboard() {
 
   const selectedRepo = repositories.find((r) => r.id === selectedRepositoryId) ?? null
 
-  const effectiveEditor =
-    selectedRepo?.preferredEditor || settings?.defaultEditor || 'cursor'
+  const effectiveEditor = selectedRepo?.preferredEditor || settings?.defaultEditor || 'cursor'
 
   const repoWorktrees = useMemo(() => {
     if (!selectedRepo) return []
@@ -350,9 +368,7 @@ export function Dashboard() {
                           )}
                           title={repo.favorite ? 'Remove favorite' : 'Add favorite'}
                         >
-                          <Star
-                            className={cn('h-3.5 w-3.5', repo.favorite && 'fill-warning')}
-                          />
+                          <Star className={cn('h-3.5 w-3.5', repo.favorite && 'fill-warning')} />
                         </button>
                       </div>
                     </li>
@@ -363,7 +379,29 @@ export function Dashboard() {
           </div>
         </aside>
 
-        <main className="flex min-w-0 flex-1 flex-col">
+        <main className="relative flex min-w-0 flex-1 flex-col">
+          {(scanning || loading) && (
+            <div className="pointer-events-none absolute inset-x-0 bottom-4 z-20 flex flex-col items-center gap-2 px-4">
+              {scanning && (
+                <div className="pointer-events-auto flex max-w-full items-center gap-2 rounded-full border border-border bg-card/95 px-3.5 py-2 text-xs text-muted shadow-lg backdrop-blur">
+                  <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+                  <span className="truncate">
+                    {scanProgress
+                      ? `Scanning… ${scanProgress.found} found · ${scanProgress.current} folders${scanProgress.currentPath ? ` · ${shortenPath(scanProgress.currentPath)}` : ''}`
+                      : 'Scanning folders…'}
+                  </span>
+                </div>
+              )}
+              {loading && (
+                <div className="pointer-events-auto flex items-center gap-2 rounded-full border border-border bg-card/95 px-3.5 py-2 text-xs text-muted shadow-lg backdrop-blur">
+                  <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+                  {statusProgress && statusProgress.total > 0
+                    ? `Fetching worktree statuses… ${statusProgress.current}/${statusProgress.total}`
+                    : 'Fetching worktree statuses…'}
+                </div>
+              )}
+            </div>
+          )}
           {selectedRepo ? (
             <>
               <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-5 py-4">
@@ -378,18 +416,11 @@ export function Dashboard() {
                       }
                       className={cn(
                         'rounded p-1',
-                        selectedRepo.favorite
-                          ? 'text-warning'
-                          : 'text-muted hover:text-warning'
+                        selectedRepo.favorite ? 'text-warning' : 'text-muted hover:text-warning'
                       )}
                       title={selectedRepo.favorite ? 'Unfavorite' : 'Favorite'}
                     >
-                      <Star
-                        className={cn(
-                          'h-4 w-4',
-                          selectedRepo.favorite && 'fill-warning'
-                        )}
-                      />
+                      <Star className={cn('h-4 w-4', selectedRepo.favorite && 'fill-warning')} />
                     </button>
                     {selectedRepo.provider && (
                       <span className="rounded-md bg-accent px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted">
@@ -475,12 +506,6 @@ export function Dashboard() {
               </div>
 
               <div className="flex-1 overflow-auto p-4">
-                {loading && (
-                  <div className="mb-2 flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-xs text-muted">
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    Fetching worktree statuses…
-                  </div>
-                )}
                 {repoWorktrees.length === 0 ? (
                   <div className="flex h-full flex-col items-center justify-center gap-2 text-muted">
                     <p className="text-sm">No worktrees match this filter.</p>

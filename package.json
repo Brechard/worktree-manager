@@ -1,7 +1,7 @@
 {
   "name": "worktree-manager",
   "private": true,
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Cross-platform git worktree manager with clean UI",
   "type": "module",
   "license": "MIT",

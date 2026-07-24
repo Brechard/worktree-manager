@@ -63,6 +63,13 @@ export const worktreeStatusSchema = z.object({
   hasOpenPR: z.boolean().default(false),
   pullRequest: pullRequestSchema.optional(),
   lastFetched: z.number().optional(),
+  /** Live branch name at refresh time ('HEAD' when detached); overrides the
+   *  possibly-stale value stored on the worktree from the last full scan. */
+  branch: z.string().optional(),
+  /** Live short HEAD commit at refresh time. */
+  headCommit: z.string().optional(),
+  /** Whether HEAD is detached right now. */
+  detached: z.boolean().optional(),
 })
 export type WorktreeStatus = z.infer<typeof worktreeStatusSchema>
 

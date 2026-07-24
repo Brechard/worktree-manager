@@ -14,15 +14,14 @@ import {
   FileX,
   FilePlus,
   FileClock,
-  Download,
-  Upload,
-  RefreshCw,
-  FileDiff,
+  Eye,
 } from 'lucide-react'
 import type { Repository, Worktree, WorktreeStatus, WorktreeDetails } from '@worktree/contracts'
 import { cn } from '../lib/utils'
 import { editorLabel, shortenPath } from '../lib/paths'
 import { api } from '../api'
+import { GitActionsMenu } from './GitActionsMenu'
+import { DiffViewer } from './DiffViewer'
 
 interface WorktreeRowProps {
   worktree: Worktree
@@ -47,8 +46,13 @@ export function WorktreeRow({
   const [expanded, setExpanded] = useState(false)
   const [details, setDetails] = useState<WorktreeDetails | null>(null)
   const [loadingDetails, setLoadingDetails] = useState(false)
-  const [selectedFile, setSelectedFile] = useState<{ path: string; staged: boolean; untracked: boolean } | null>(null)
-  const [fileDiff, setFileDiff] = useState<string>('')
+  const [selectedFile, setSelectedFile] = useState<{
+    path: string
+    staged: boolean
+    untracked: boolean
+    diff: string
+    fullDiff: string
+  } | null>(null)
   const [loadingDiff, setLoadingDiff] = useState(false)
   const [commitMessage, setCommitMessage] = useState('')
   const [showCommitInput, setShowCommitInput] = useState(false)
@@ -129,17 +133,19 @@ export function WorktreeRow({
     const untracked = details?.untrackedFiles.some((f) => f.path === file.path) ?? false
     if (selectedFile?.path === file.path) {
       setSelectedFile(null)
-      setFileDiff('')
       return
     }
-    setSelectedFile({ path: file.path, staged, untracked })
+    setSelectedFile({ path: file.path, staged, untracked, diff: '', fullDiff: '' })
     setLoadingDiff(true)
     try {
-      const diff = await api.getFileDiff({ path: worktree.path, filePath: file.path, staged, untracked })
-      setFileDiff(diff)
+      const [diff, fullDiff] = await Promise.all([
+        api.getFileDiff({ path: worktree.path, filePath: file.path, staged, untracked, fullContext: false }),
+        api.getFileDiff({ path: worktree.path, filePath: file.path, staged, untracked, fullContext: true }),
+      ])
+      setSelectedFile({ path: file.path, staged, untracked, diff, fullDiff })
     } catch (err) {
       onActionError?.(String(err))
-      setFileDiff('')
+      setSelectedFile({ path: file.path, staged, untracked, diff: '', fullDiff: '' })
     } finally {
       setLoadingDiff(false)
     }
@@ -244,37 +250,16 @@ export function WorktreeRow({
         </div>
 
         <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
-          <ActionButton
-            title="Pull fast-forward"
-            onClick={handlePull}
-            busy={busy === 'pull'}
-            icon={<Download className="h-3 w-3" />}
-            label="Pull"
-            variant="secondary"
-          />
-          <ActionButton
-            title="Pull with rebase"
-            onClick={handleRebase}
-            busy={busy === 'rebase'}
-            icon={<RefreshCw className="h-3 w-3" />}
-            label="Rebase"
-            variant="secondary"
-          />
-          <ActionButton
-            title="Push branch"
-            onClick={handlePush}
-            busy={busy === 'push'}
-            icon={<Upload className="h-3 w-3" />}
-            label="Push"
-            variant="secondary"
-          />
-          <ActionButton
-            title={showCommitInput ? 'Hide commit input' : 'Commit staged changes'}
-            onClick={() => setShowCommitInput((v) => !v)}
-            busy={busy === 'commit'}
-            icon={<GitCommit className="h-3 w-3" />}
-            label="Commit"
-            variant={showCommitInput ? 'primary' : 'secondary'}
+          <GitActionsMenu
+            busy={busy}
+            showCommitInput={showCommitInput}
+            onPull={handlePull}
+            onRebase={handleRebase}
+            onPush={handlePush}
+            onCommit={() => {
+              setExpanded(true)
+              setShowCommitInput(true)
+            }}
           />
           <IconButton
             title={`Open in ${editorLabel(editorId)}`}
@@ -344,8 +329,7 @@ export function WorktreeRow({
                 files={details.dirtyFiles}
                 color="text-warning"
                 onFileClick={handleFileClick}
-                selectedPath={selectedFile?.path}
-                fileDiff={selectedFile ? fileDiff : ''}
+                selectedFile={selectedFile}
                 loadingDiff={loadingDiff}
               />
               <FileList
@@ -354,8 +338,7 @@ export function WorktreeRow({
                 files={details.stagedFiles}
                 color="text-success"
                 onFileClick={handleFileClick}
-                selectedPath={selectedFile?.path}
-                fileDiff={selectedFile ? fileDiff : ''}
+                selectedFile={selectedFile}
                 loadingDiff={loadingDiff}
               />
               <FileList
@@ -364,8 +347,7 @@ export function WorktreeRow({
                 files={details.untrackedFiles}
                 color="text-muted"
                 onFileClick={handleFileClick}
-                selectedPath={selectedFile?.path}
-                fileDiff={selectedFile ? fileDiff : ''}
+                selectedFile={selectedFile}
                 loadingDiff={loadingDiff}
               />
               <CommitList title="Unpushed commits" commits={details.unpushedCommits} />
@@ -395,8 +377,7 @@ function FileList({
   files,
   color,
   onFileClick,
-  selectedPath,
-  fileDiff,
+  selectedFile,
   loadingDiff,
 }: {
   title: string
@@ -404,8 +385,7 @@ function FileList({
   files: { path: string; status: string }[]
   color?: string
   onFileClick?: (file: { path: string; status: string }) => void | Promise<void>
-  selectedPath?: string | undefined
-  fileDiff?: string | undefined
+  selectedFile?: { path: string; diff: string; fullDiff: string; staged?: boolean; untracked?: boolean } | null
   loadingDiff?: boolean | undefined
 }) {
   if (files.length === 0) return null
@@ -424,7 +404,7 @@ function FileList({
                 title={`${f.status} ${f.path}`}
                 className={cn(
                   'flex flex-1 items-center gap-2 truncate rounded px-1.5 py-0.5 font-mono text-[11px] text-left',
-                  selectedPath === f.path ? 'bg-accent text-foreground' : 'text-foreground/90 hover:bg-accent/50'
+                  selectedFile?.path === f.path ? 'bg-accent text-foreground' : 'text-foreground/90 hover:bg-accent/50'
                 )}
               >
                 <span className={cn('shrink-0 font-bold', color)}>{f.status}</span>
@@ -435,25 +415,21 @@ function FileList({
                 title="View diff"
                 className={cn(
                   'shrink-0 rounded p-1 text-muted opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100',
-                  selectedPath === f.path && 'opacity-100'
+                  selectedFile?.path === f.path && 'opacity-100'
                 )}
               >
-                <FileDiff className="h-3 w-3" />
+                <Eye className="h-3 w-3" />
               </button>
             </div>
-            {selectedPath === f.path && (
+            {selectedFile?.path === f.path && (
               <div className="mt-1 rounded-md border border-border bg-background p-2">
                 {loadingDiff ? (
                   <div className="flex items-center gap-2 text-xs text-muted">
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
                     Loading diff…
                   </div>
-                ) : fileDiff ? (
-                  <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all font-mono text-[10px] text-foreground/80">
-                    {fileDiff}
-                  </pre>
                 ) : (
-                  <p className="text-[10px] text-muted">No diff available.</p>
+                  <DiffViewer diff={selectedFile.diff} fullDiff={selectedFile.fullDiff} />
                 )}
               </div>
             )}
@@ -461,39 +437,6 @@ function FileList({
         ))}
       </ul>
     </div>
-  )
-}
-
-function ActionButton({
-  icon,
-  label,
-  title,
-  onClick,
-  busy,
-  variant = 'secondary',
-}: {
-  icon: ReactNode
-  label: string
-  title: string
-  onClick: () => void
-  busy?: boolean
-  variant?: 'primary' | 'secondary'
-}) {
-  return (
-    <button
-      onClick={onClick}
-      title={title}
-      disabled={busy}
-      className={cn(
-        'inline-flex items-center gap-1 rounded-md px-2 py-1 text-[10px] font-medium transition-colors disabled:opacity-50',
-        variant === 'primary'
-          ? 'bg-primary text-primary-foreground hover:bg-primary/90'
-          : 'bg-muted/60 text-foreground hover:bg-accent'
-      )}
-    >
-      {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : icon}
-      {label}
-    </button>
   )
 }
 

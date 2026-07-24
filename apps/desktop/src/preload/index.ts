@@ -51,6 +51,7 @@ const api = {
     filePath: string
     staged?: boolean
     untracked?: boolean
+    fullContext?: boolean
   }): Promise<string> => ipcRenderer.invoke('get-file-diff', args),
 
   pullWorktree: (path: string): Promise<{ success: boolean; output: string }> =>

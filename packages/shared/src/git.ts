@@ -272,19 +272,21 @@ export async function getFileDiff(
   cwd: string,
   filePath: string,
   staged = false,
-  untracked = false
+  untracked = false,
+  fullContext = false
 ): Promise<string> {
+  const contextArgs = fullContext ? ['-U', '99999'] : []
   if (untracked) {
     // git diff --no-index exits with 1 when files differ, which is expected for new files.
     const { stdout, stderr, exitCode } = await runGit(
       cwd,
-      ['diff', '--no-index', '-p', '--', '/dev/null', filePath],
+      ['diff', '--no-index', '-p', ...contextArgs, '--', '/dev/null', filePath],
       { raw: true }
     )
     if (exitCode !== 0 && exitCode !== 1) throw new Error(stderr || `Could not load diff for ${filePath}`)
     return stdout
   }
-  const args = staged ? ['diff', '--cached', '--', filePath] : ['diff', '--', filePath]
+  const args = staged ? ['diff', '--cached', ...contextArgs, '--', filePath] : ['diff', ...contextArgs, '--', filePath]
   const { stdout, exitCode, stderr } = await runGit(cwd, args, { raw: true })
   if (exitCode !== 0) throw new Error(stderr || `Could not load diff for ${filePath}`)
   return stdout

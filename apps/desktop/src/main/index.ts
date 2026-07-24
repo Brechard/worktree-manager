@@ -278,8 +278,8 @@ ipcMain.handle(
 
 ipcMain.handle(
   'get-file-diff',
-  async (_, args: { path: string; filePath: string; staged?: boolean; untracked?: boolean }) => {
-    return getFileDiff(args.path, args.filePath, args.staged, args.untracked)
+  async (_, args: { path: string; filePath: string; staged?: boolean; untracked?: boolean; fullContext?: boolean }) => {
+    return getFileDiff(args.path, args.filePath, args.staged, args.untracked, args.fullContext)
   }
 )
 

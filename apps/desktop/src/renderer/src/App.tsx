@@ -30,7 +30,15 @@ export default function App() {
         setWorktrees(worktrees)
 
         if (repositories.length > 0) {
-          setSelectedRepositoryId(repositories[0]!.id)
+          const last = settings.lastSelectedRepositoryId
+          const validLast = last && repositories.some((r) => r.id === last)
+          const firstFavorite = [...repositories]
+            .sort((a, b) => a.name.localeCompare(b.name))
+            .find((r) => r.favorite)
+          const selectedRepo = validLast
+            ? repositories.find((r) => r.id === last)!
+            : firstFavorite ?? repositories[0]!
+          setSelectedRepositoryId(selectedRepo.id)
           setView('dashboard')
         } else {
           setView('onboarding')

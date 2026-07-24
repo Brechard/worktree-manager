@@ -55,12 +55,27 @@ export function Dashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [worktrees.length, repositories.length])
 
+  const selectRepository = async (id: string) => {
+    setSelectedRepositoryId(id)
+    if (settings) {
+      await api.setSettings({ ...settings, lastSelectedRepositoryId: id })
+    }
+  }
+
   useEffect(() => {
     if (repositories.length === 0) return
-    if (!selectedRepositoryId || !repositories.some((r) => r.id === selectedRepositoryId)) {
-      setSelectedRepositoryId(repositories[0]!.id)
-    }
-  }, [repositories, selectedRepositoryId, setSelectedRepositoryId])
+    if (selectedRepositoryId && repositories.some((r) => r.id === selectedRepositoryId)) return
+
+    const last = settings?.lastSelectedRepositoryId
+    const validLast = last && repositories.some((r) => r.id === last)
+    const firstFavorite = [...repositories]
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .find((r) => r.favorite)
+    const fallback = validLast
+      ? repositories.find((r) => r.id === last)!
+      : firstFavorite ?? repositories[0]!
+    setSelectedRepositoryId(fallback.id)
+  }, [repositories, selectedRepositoryId, setSelectedRepositoryId, settings])
 
   const persistRepos = async (next: Repository[]) => {
     setRepositories(next)
@@ -248,7 +263,7 @@ export function Dashboard() {
                         )}
                       >
                         <button
-                          onClick={() => setSelectedRepositoryId(repo.id)}
+                          onClick={() => selectRepository(repo.id)}
                           className="flex min-w-0 flex-1 items-start gap-2 px-2.5 py-2 text-left"
                         >
                           <FolderGit2

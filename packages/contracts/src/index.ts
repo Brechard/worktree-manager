@@ -88,6 +88,7 @@ export const appSettingsSchema = z.object({
   /** Optional global PATs used when a repo has no token of its own */
   githubToken: z.string().optional(),
   azureToken: z.string().optional(),
+  lastSelectedRepositoryId: z.string().optional(),
 })
 export type AppSettings = z.infer<typeof appSettingsSchema>
 

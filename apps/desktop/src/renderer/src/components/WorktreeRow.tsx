@@ -14,6 +14,8 @@ import {
   FileX,
   FilePlus,
   FileClock,
+  Download,
+  Upload,
 } from 'lucide-react'
 import type { Repository, Worktree, WorktreeStatus, WorktreeDetails } from '@worktree/contracts'
 import { cn } from '../lib/utils'
@@ -27,6 +29,7 @@ interface WorktreeRowProps {
   editorId: string
   onDelete: (path: string) => void
   onActionError?: (message: string) => void
+  onRefresh?: () => void
 }
 
 export function WorktreeRow({
@@ -36,11 +39,17 @@ export function WorktreeRow({
   editorId,
   onDelete,
   onActionError,
+  onRefresh,
 }: WorktreeRowProps) {
-  const [busy, setBusy] = useState<'editor' | 'terminal' | 'folder' | null>(null)
+  const [busy, setBusy] = useState<'editor' | 'terminal' | 'folder' | 'pull' | 'push' | 'commit' | null>(null)
   const [expanded, setExpanded] = useState(false)
   const [details, setDetails] = useState<WorktreeDetails | null>(null)
   const [loadingDetails, setLoadingDetails] = useState(false)
+  const [selectedFile, setSelectedFile] = useState<{ path: string; staged: boolean; untracked: boolean } | null>(null)
+  const [fileDiff, setFileDiff] = useState<string>('')
+  const [loadingDiff, setLoadingDiff] = useState(false)
+  const [commitMessage, setCommitMessage] = useState('')
+  const [showCommitInput, setShowCommitInput] = useState(false)
 
   useEffect(() => {
     if (!expanded || details) return
@@ -60,17 +69,25 @@ export function WorktreeRow({
     }
   }, [expanded, worktree, repository, details, onActionError])
 
+  const gitActions = new Set(['pull', 'push', 'commit'])
   const run = async (
-    kind: 'editor' | 'terminal' | 'folder',
-    fn: () => Promise<{ success?: boolean; error?: string } | string | void>
+    kind: 'editor' | 'terminal' | 'folder' | 'pull' | 'push' | 'commit',
+    fn: () => Promise<{ success?: boolean; error?: string; output?: string } | string | void>
   ) => {
     setBusy(kind)
     try {
       const result = await fn()
       if (result && typeof result === 'object' && 'success' in result && result.success === false) {
-        onActionError?.(result.error || `Failed to open ${kind}`)
+        onActionError?.(result.error || result.output || `${kind} failed`)
       } else if (typeof result === 'string' && result.length > 0) {
         onActionError?.(result)
+      } else if (gitActions.has(kind)) {
+        onRefresh?.()
+        if (expanded) {
+          setDetails(null)
+          setSelectedFile(null)
+          api.getWorktreeDetails({ worktree, repository }).then(setDetails).catch((err) => onActionError?.(String(err)))
+        }
       }
     } catch (err) {
       onActionError?.(String(err))
@@ -91,6 +108,37 @@ export function WorktreeRow({
   const handlePr = async () => {
     if (status?.pullRequest?.url) {
       await window.api.openExternal(status.pullRequest.url)
+    }
+  }
+
+  const handlePull = () => run('pull', () => window.api.pullWorktree(worktree.path))
+  const handlePush = () => run('push', () => window.api.pushWorktree(worktree.path))
+
+  const handleCommit = (all = false) => {
+    if (!commitMessage.trim()) return
+    run('commit', () => window.api.commitWorktree({ path: worktree.path, message: commitMessage, all }))
+    setCommitMessage('')
+    setShowCommitInput(false)
+  }
+
+  const handleFileClick = async (file: { path: string; status: string }) => {
+    const staged = details?.stagedFiles.some((f) => f.path === file.path) ?? false
+    const untracked = details?.untrackedFiles.some((f) => f.path === file.path) ?? false
+    if (selectedFile?.path === file.path) {
+      setSelectedFile(null)
+      setFileDiff('')
+      return
+    }
+    setSelectedFile({ path: file.path, staged, untracked })
+    setLoadingDiff(true)
+    try {
+      const diff = await api.getFileDiff({ path: worktree.path, filePath: file.path, staged, untracked })
+      setFileDiff(diff)
+    } catch (err) {
+      onActionError?.(String(err))
+      setFileDiff('')
+    } finally {
+      setLoadingDiff(false)
     }
   }
 
@@ -193,6 +241,19 @@ export function WorktreeRow({
         </div>
 
         <div className="flex shrink-0 items-center gap-0.5">
+          <IconButton title="Pull" onClick={handlePull} busy={busy === 'pull'}>
+            <Download className="h-4 w-4" />
+          </IconButton>
+          <IconButton title="Push" onClick={handlePush} busy={busy === 'push'}>
+            <Upload className="h-4 w-4" />
+          </IconButton>
+          <IconButton
+            title="Commit"
+            onClick={() => setShowCommitInput((v) => !v)}
+            busy={busy === 'commit'}
+          >
+            <GitCommit className="h-4 w-4" />
+          </IconButton>
           <IconButton
             title={`Open in ${editorLabel(editorId)}`}
             onClick={handleOpen}
@@ -223,9 +284,68 @@ export function WorktreeRow({
             </div>
           ) : details ? (
             <div className="space-y-4">
-              <FileList title="Modified" icon={<FileX className="h-3.5 w-3.5" />} files={details.dirtyFiles} color="text-warning" />
-              <FileList title="Staged" icon={<FilePlus className="h-3.5 w-3.5" />} files={details.stagedFiles} color="text-success" />
-              <FileList title="Untracked" icon={<FileClock className="h-3.5 w-3.5" />} files={details.untrackedFiles} color="text-muted" />
+              {showCommitInput && (
+                <div className="flex items-start gap-2">
+                  <input
+                    type="text"
+                    value={commitMessage}
+                    onChange={(e) => setCommitMessage(e.target.value)}
+                    placeholder="Commit message"
+                    className="flex-1 rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground placeholder:text-muted focus:border-primary focus:outline-none"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault()
+                        handleCommit(false)
+                      }
+                      if (e.key === 'Escape') setShowCommitInput(false)
+                    }}
+                  />
+                  <button
+                    onClick={() => handleCommit(false)}
+                    disabled={!commitMessage.trim()}
+                    className="rounded-md bg-primary px-2 py-1 text-xs font-medium text-primary-foreground disabled:opacity-50"
+                  >
+                    Commit
+                  </button>
+                  <button
+                    onClick={() => handleCommit(true)}
+                    disabled={!commitMessage.trim() || details.dirtyFiles.length === 0}
+                    className="rounded-md bg-muted px-2 py-1 text-xs font-medium text-muted-foreground disabled:opacity-50"
+                  >
+                    Commit all
+                  </button>
+                </div>
+              )}
+              <FileList
+                title="Modified"
+                icon={<FileX className="h-3.5 w-3.5" />}
+                files={details.dirtyFiles}
+                color="text-warning"
+                onFileClick={handleFileClick}
+                selectedPath={selectedFile?.path}
+                fileDiff={selectedFile ? fileDiff : ''}
+                loadingDiff={loadingDiff}
+              />
+              <FileList
+                title="Staged"
+                icon={<FilePlus className="h-3.5 w-3.5" />}
+                files={details.stagedFiles}
+                color="text-success"
+                onFileClick={handleFileClick}
+                selectedPath={selectedFile?.path}
+                fileDiff={selectedFile ? fileDiff : ''}
+                loadingDiff={loadingDiff}
+              />
+              <FileList
+                title="Untracked"
+                icon={<FileClock className="h-3.5 w-3.5" />}
+                files={details.untrackedFiles}
+                color="text-muted"
+                onFileClick={handleFileClick}
+                selectedPath={selectedFile?.path}
+                fileDiff={selectedFile ? fileDiff : ''}
+                loadingDiff={loadingDiff}
+              />
               <CommitList title="Unpushed commits" commits={details.unpushedCommits} />
               {details.behindCommits.length > 0 && (
                 <CommitList title={`Behind ${details.baseBranch}`} commits={details.behindCommits} />
@@ -252,11 +372,19 @@ function FileList({
   icon,
   files,
   color,
+  onFileClick,
+  selectedPath,
+  fileDiff,
+  loadingDiff,
 }: {
   title: string
   icon: ReactNode
   files: { path: string; status: string }[]
   color?: string
+  onFileClick?: (file: { path: string; status: string }) => void | Promise<void>
+  selectedPath?: string | undefined
+  fileDiff?: string | undefined
+  loadingDiff?: boolean | undefined
 }) {
   if (files.length === 0) return null
   return (
@@ -267,13 +395,33 @@ function FileList({
       </h4>
       <ul className="space-y-0.5">
         {files.map((f, i) => (
-          <li
-            key={`${f.path}-${i}`}
-            className="flex items-center gap-2 truncate font-mono text-[11px]"
-            title={`${f.status} ${f.path}`}
-          >
-            <span className={cn('shrink-0 font-bold', color)}>{f.status}</span>
-            <span className="truncate text-foreground/90">{f.path}</span>
+          <li key={`${f.path}-${i}`} title={`${f.status} ${f.path}`}>
+            <button
+              onClick={() => onFileClick?.(f)}
+              className={cn(
+                'flex w-full items-center gap-2 truncate rounded px-1.5 py-0.5 font-mono text-[11px] text-left',
+                selectedPath === f.path ? 'bg-accent text-foreground' : 'text-foreground/90 hover:bg-accent/50'
+              )}
+            >
+              <span className={cn('shrink-0 font-bold', color)}>{f.status}</span>
+              <span className="truncate">{f.path}</span>
+            </button>
+            {selectedPath === f.path && (
+              <div className="mt-1 rounded-md border border-border bg-background p-2">
+                {loadingDiff ? (
+                  <div className="flex items-center gap-2 text-xs text-muted">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    Loading diff…
+                  </div>
+                ) : fileDiff ? (
+                  <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all font-mono text-[10px] text-foreground/80">
+                    {fileDiff}
+                  </pre>
+                ) : (
+                  <p className="text-[10px] text-muted">No diff available.</p>
+                )}
+              </div>
+            )}
           </li>
         ))}
       </ul>

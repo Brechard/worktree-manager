@@ -262,3 +262,60 @@ export async function getBehindCommits(cwd: string, max = 20): Promise<CommitInf
   if (exitCode !== 0) return []
   return parseCommitLog(stdout)
 }
+
+export interface GitActionResult {
+  success: boolean
+  output: string
+}
+
+export async function getFileDiff(
+  cwd: string,
+  filePath: string,
+  staged = false,
+  untracked = false
+): Promise<string> {
+  if (untracked) {
+    // git diff --no-index exits with 1 when files differ, which is expected for new files.
+    const { stdout, stderr, exitCode } = await runGit(
+      cwd,
+      ['diff', '--no-index', '-p', '--', '/dev/null', filePath],
+      { raw: true }
+    )
+    if (exitCode !== 0 && exitCode !== 1) throw new Error(stderr || `Could not load diff for ${filePath}`)
+    return stdout
+  }
+  const args = staged ? ['diff', '--cached', '--', filePath] : ['diff', '--', filePath]
+  const { stdout, exitCode, stderr } = await runGit(cwd, args, { raw: true })
+  if (exitCode !== 0) throw new Error(stderr || `Could not load diff for ${filePath}`)
+  return stdout
+}
+
+export async function pullWorktree(cwd: string): Promise<GitActionResult> {
+  const { stdout, stderr, exitCode } = await runGit(cwd, ['pull', '--ff-only'])
+  return {
+    success: exitCode === 0,
+    output: exitCode === 0 ? stdout || 'Pulled' : stderr || 'Pull failed',
+  }
+}
+
+export async function pushWorktree(cwd: string): Promise<GitActionResult> {
+  const current = await getCurrentBranch(cwd)
+  const { stdout, stderr, exitCode } = await runGit(cwd, ['push', '-u', 'origin', current])
+  return {
+    success: exitCode === 0,
+    output: exitCode === 0 ? stdout || 'Pushed' : stderr || 'Push failed',
+  }
+}
+
+export async function commitWorktree(
+  cwd: string,
+  message: string,
+  all = false
+): Promise<GitActionResult> {
+  const args = all ? ['commit', '-am', message] : ['commit', '-m', message]
+  const { stdout, stderr, exitCode } = await runGit(cwd, args)
+  return {
+    success: exitCode === 0,
+    output: exitCode === 0 ? stdout || 'Committed' : stderr || 'Commit failed',
+  }
+}

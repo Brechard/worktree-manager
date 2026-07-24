@@ -46,6 +46,25 @@ const api = {
     status: WorktreeStatus
   }): Promise<SafetyResult> => ipcRenderer.invoke('evaluate-safety', args),
 
+  getFileDiff: (args: {
+    path: string
+    filePath: string
+    staged?: boolean
+    untracked?: boolean
+  }): Promise<string> => ipcRenderer.invoke('get-file-diff', args),
+
+  pullWorktree: (path: string): Promise<{ success: boolean; output: string }> =>
+    ipcRenderer.invoke('pull-worktree', path),
+
+  pushWorktree: (path: string): Promise<{ success: boolean; output: string }> =>
+    ipcRenderer.invoke('push-worktree', path),
+
+  commitWorktree: (args: {
+    path: string
+    message: string
+    all?: boolean
+  }): Promise<{ success: boolean; output: string }> => ipcRenderer.invoke('commit-worktree', args),
+
   openDirectoryDialog: (): Promise<string[]> => ipcRenderer.invoke('open-directory-dialog'),
 
   openInEditor: (args: { path: string; editor?: string }): Promise<{ success: boolean; error?: string }> =>

@@ -5,6 +5,7 @@
     output: 'release',
     buildResources: 'resources'
   },
+  icon: 'resources/icon.png',
   files: [
     'dist-electron',
     'package.json'

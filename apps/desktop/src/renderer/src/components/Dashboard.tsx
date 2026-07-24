@@ -418,6 +418,7 @@ export function Dashboard() {
                         editorId={effectiveEditor}
                         onDelete={handleDelete}
                         onActionError={setActionError}
+                        onRefresh={loadStatuses}
                       />
                     ))}
                   </div>

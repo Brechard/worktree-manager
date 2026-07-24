@@ -6,12 +6,16 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { z } from 'zod'
 import {
+  commitWorktree,
   detectProviderToken,
   discoverRepositories,
   evaluateSafety,
+  getFileDiff,
   getWorktreeDetails,
   getWorktreeStatus,
   parseProviderFromRemoteUrl,
+  pullWorktree,
+  pushWorktree,
   refreshPullRequest,
   runCommand,
 } from '@worktree/shared'
@@ -242,6 +246,28 @@ ipcMain.handle(
   'get-worktree-details',
   async (_, args: { worktree: Worktree; repository: Repository }): Promise<WorktreeDetails> => {
     return getWorktreeDetails(args)
+  }
+)
+
+ipcMain.handle(
+  'get-file-diff',
+  async (_, args: { path: string; filePath: string; staged?: boolean; untracked?: boolean }) => {
+    return getFileDiff(args.path, args.filePath, args.staged, args.untracked)
+  }
+)
+
+ipcMain.handle('pull-worktree', async (_, path: string) => {
+  return pullWorktree(path)
+})
+
+ipcMain.handle('push-worktree', async (_, path: string) => {
+  return pushWorktree(path)
+})
+
+ipcMain.handle(
+  'commit-worktree',
+  async (_, args: { path: string; message: string; all?: boolean }) => {
+    return commitWorktree(args.path, args.message, args.all)
   }
 )
 

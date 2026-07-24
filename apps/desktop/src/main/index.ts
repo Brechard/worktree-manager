@@ -144,6 +144,11 @@ const EDITOR_LAUNCHERS: Record<string, { commands: string[]; macApp?: string }> 
 
 async function createWindow() {
   const iconPath = getIconPath()
+  if (iconPath) {
+    console.log(`[worktree] using app icon: ${iconPath}`)
+  } else {
+    console.log(`[worktree] no app icon found`)
+  }
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -162,10 +167,6 @@ async function createWindow() {
     },
   })
 
-  if (iconPath && process.platform === 'darwin' && app.dock) {
-    app.dock.setIcon(nativeImage.createFromPath(iconPath))
-  }
-
   win.once('ready-to-show', () => {
     win.show()
     win.focus()
@@ -180,6 +181,12 @@ async function createWindow() {
 
 app.whenReady().then(() => {
   nativeTheme.themeSource = 'system'
+
+  const iconPath = getIconPath()
+  if (iconPath && process.platform === 'darwin' && app.dock) {
+    app.dock.setIcon(nativeImage.createFromPath(iconPath))
+  }
+
   createWindow()
 
   app.on('activate', () => {

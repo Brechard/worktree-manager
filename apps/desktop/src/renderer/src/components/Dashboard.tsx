@@ -31,6 +31,7 @@ export function Dashboard() {
     setRepositories,
     setWorktrees,
     setSelectedRepositoryId,
+    setScanProgress,
   } = useAppStore()
   const [loading, setLoading] = useState(false)
   const [filter, setFilter] = useState<'all' | 'dirty' | 'unmerged' | 'unpushed' | 'safe'>('all')
@@ -38,6 +39,7 @@ export function Dashboard() {
   const [projectSearch, setProjectSearch] = useState('')
   const [configRepoId, setConfigRepoId] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
+  const [scanning, setScanning] = useState(false)
 
   const loadStatuses = async () => {
     if (worktrees.length === 0) return
@@ -48,6 +50,60 @@ export function Dashboard() {
     } finally {
       setLoading(false)
     }
+  }
+
+  useEffect(() => {
+    const remove = api.onScanProgress((progress) => setScanProgress(progress))
+    return remove
+  }, [setScanProgress])
+
+  const rescan = async () => {
+    if (scanning || loading) return
+    const roots = Array.from(
+      new Set([
+        ...(settings?.watchedDirectories ?? []),
+        ...repositories.map((r) => r.path),
+      ])
+    ).filter((root) => root.trim().length > 0)
+    if (roots.length === 0) return
+
+    setScanning(true)
+    setLoading(true)
+    setActionError(null)
+    try {
+      const result = await api.discoverWorktrees({ roots, maxDepth: 5 })
+      if (result.cancelled) return
+
+      const existingByPath = new Map(repositories.map((r) => [r.path, r]))
+      const mergedRepos = result.repositories.map((r) => {
+        const prev = existingByPath.get(r.path) || repositories.find((e) => e.id === r.id)
+        if (!prev) return r
+        return {
+          ...r,
+          favorite: prev.favorite ?? r.favorite,
+          preferredEditor: prev.preferredEditor ?? r.preferredEditor,
+          baseBranch: prev.baseBranch || r.baseBranch,
+          provider: prev.provider?.personalAccessToken ? prev.provider : r.provider ?? prev.provider,
+        }
+      })
+
+      const keptWorktrees = worktrees.filter(
+        (w) => !result.repositories.some((r) => r.id === w.repositoryId)
+      )
+      const mergedWorktrees = [...keptWorktrees, ...result.worktrees]
+
+      await Promise.all([
+        api.setRepositories(mergedRepos),
+        api.setWorktrees(mergedWorktrees),
+      ])
+      setRepositories(mergedRepos)
+      setWorktrees(mergedWorktrees)
+    } catch (err) {
+      setActionError(String(err))
+    } finally {
+      setScanning(false)
+    }
+    await loadStatuses()
   }
 
   useEffect(() => {
@@ -189,13 +245,13 @@ export function Dashboard() {
         trailing={
           <>
             <button
-              onClick={loadStatuses}
-              disabled={loading}
+              onClick={rescan}
+              disabled={loading || scanning}
               className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1.5 text-xs font-medium hover:bg-accent"
-              title="Refresh statuses"
+              title="Refresh worktrees and statuses"
             >
-              <RefreshCw className={cn('h-3.5 w-3.5', loading && 'animate-spin')} />
-              Refresh
+              <RefreshCw className={cn('h-3.5 w-3.5', (loading || scanning) && 'animate-spin')} />
+              {scanning ? 'Scanning…' : 'Refresh'}
             </button>
             <button
               onClick={() => setView('settings')}

@@ -275,7 +275,7 @@ export async function getFileDiff(
   untracked = false,
   fullContext = false
 ): Promise<string> {
-  const contextArgs = fullContext ? ['-U', '99999'] : []
+  const contextArgs = fullContext ? ['-U99999'] : []
   if (untracked) {
     // git diff --no-index exits with 1 when files differ, which is expected for new files.
     const { stdout, stderr, exitCode } = await runGit(
@@ -286,9 +286,10 @@ export async function getFileDiff(
     if (exitCode !== 0 && exitCode !== 1) throw new Error(stderr || `Could not load diff for ${filePath}`)
     return stdout
   }
+  // Use --submodule=short so submodule changes show the two commit hashes.
   const args = staged
-    ? ['diff', '--no-color', '--cached', ...contextArgs, '--', filePath]
-    : ['diff', '--no-color', ...contextArgs, '--', filePath]
+    ? ['diff', '--no-color', '--submodule=short', '--cached', ...contextArgs, '--', filePath]
+    : ['diff', '--no-color', '--submodule=short', ...contextArgs, '--', filePath]
   const { stdout, exitCode, stderr } = await runGit(cwd, args, { raw: true })
   if (exitCode !== 0) throw new Error(stderr || `Could not load diff for ${filePath}`)
   return stdout

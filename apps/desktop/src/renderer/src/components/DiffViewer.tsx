@@ -2,10 +2,12 @@ import { useMemo, useState } from 'react'
 import { cn } from '../lib/utils'
 
 type DiffLine = {
-  type: 'meta' | 'hunk' | 'context' | 'add' | 'del'
+  type: 'meta' | 'hunk' | 'context' | 'add' | 'del' | 'submodule'
   raw: string
   oldLine?: number | undefined
   newLine?: number | undefined
+  hash?: string | undefined
+  side?: 'old' | 'new' | undefined
 }
 
 export function parseDiff(diff: string): DiffLine[] {
@@ -53,7 +55,15 @@ export function parseDiff(diff: string): DiffLine[] {
     }
 
     const prefix = raw[0]
-    if (prefix === ' ') {
+    const submoduleMatch = raw.match(/^(.)Subproject commit ([a-f0-9]{40})$/i)
+    if (submoduleMatch) {
+      const side = submoduleMatch[1] === '-' ? 'old' : 'new'
+      const o = side === 'old' ? oldLine || undefined : undefined
+      const n = side === 'new' ? newLine || undefined : undefined
+      if (side === 'old' && oldLine) oldLine++
+      if (side === 'new' && newLine) newLine++
+      lines.push({ type: 'submodule', raw, oldLine: o, newLine: n, hash: submoduleMatch[2], side })
+    } else if (prefix === ' ') {
       const o = oldLine || undefined
       const n = newLine || undefined
       if (oldLine) oldLine++
@@ -94,9 +104,15 @@ export function DiffViewer({ diff, fullDiff }: { diff: string; fullDiff: string 
       'min-h-[1.25rem] px-1 leading-4',
       type === 'add' && 'bg-emerald-500/10 text-emerald-400',
       type === 'del' && 'bg-rose-500/10 text-rose-400',
+      type === 'submodule' && 'bg-amber-500/10 text-amber-400',
       type === 'hunk' && 'bg-primary/10 text-primary',
       (type === 'meta' || type === 'context') && 'text-foreground/80'
     )
+
+  const submoduleText = (line: DiffLine) => {
+    const short = line.hash?.slice(0, 8) ?? ''
+    return line.side === 'old' ? `Old submodule commit: ${short}` : `New submodule commit: ${short}`
+  }
 
   return (
     <div className="space-y-2">
@@ -131,6 +147,17 @@ export function DiffViewer({ diff, fullDiff }: { diff: string; fullDiff: string 
                 </div>
               )
             }
+            if (line.type === 'submodule') {
+              return (
+                <div key={i} className={cn(cellClass(line.type), 'contents')}>
+                  <div className="text-right text-muted/60 select-none pr-1">{line.oldLine ?? ''}</div>
+                  <div className="text-right text-muted/60 select-none pr-1">{line.newLine ?? ''}</div>
+                  <div className="overflow-hidden whitespace-pre px-1">
+                    {submoduleText(line)}
+                  </div>
+                </div>
+              )
+            }
             return (
               <div key={i} className={cn(cellClass(line.type), 'contents')}>
                 <div className="text-right text-muted/60 select-none pr-1">{line.oldLine ?? ''}</div>
@@ -156,6 +183,20 @@ export function DiffViewer({ diff, fullDiff }: { diff: string; fullDiff: string 
               )
             }
             const content = line.raw.slice(1)
+            if (line.type === 'submodule') {
+              return (
+                <div key={i} className="contents">
+                  <div className="text-right text-amber-400/60 select-none pr-1">{line.oldLine ?? ''}</div>
+                  <div className="overflow-hidden whitespace-pre bg-amber-500/10 px-1 text-amber-400">
+                    {line.side === 'old' ? submoduleText(line) : ''}
+                  </div>
+                  <div className="text-right text-amber-400/60 select-none pr-1">{line.newLine ?? ''}</div>
+                  <div className="overflow-hidden whitespace-pre bg-amber-500/10 px-1 text-amber-400">
+                    {line.side === 'new' ? submoduleText(line) : ''}
+                  </div>
+                </div>
+              )
+            }
             if (line.type === 'add') {
               return (
                 <div key={i} className="contents">

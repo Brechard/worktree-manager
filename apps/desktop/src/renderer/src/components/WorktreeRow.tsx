@@ -176,7 +176,14 @@ export function WorktreeRow({
                 <ChevronRight className="h-3 w-3 text-primary" />
               )}
               <GitBranch className="h-3 w-3 text-primary" />
-              {worktree.branch}
+              {worktree.branch === 'HEAD' ? (
+                <>
+                  detached HEAD
+                  {worktree.headCommit && <span className="text-muted">@{worktree.headCommit}</span>}
+                </>
+              ) : (
+                worktree.branch
+              )}
             </span>
             {worktree.isMain && (
               <span className="rounded-md bg-primary/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary">
@@ -238,11 +245,13 @@ export function WorktreeRow({
                   </span>
                 )}
                 {status.behind > 0 && <span>{status.behind} behind</span>}
-                {!status.mergedIntoBase && worktree.branch !== status.baseBranch && (
+                {worktree.branch === 'HEAD' ? (
+                  <span className="text-muted">detached</span>
+                ) : !status.mergedIntoBase && worktree.branch !== status.baseBranch ? (
                   <span className="text-warning">unmerged</span>
-                )}
-                {status.mergedIntoBase && !worktree.isMain && (
-                  <span className="text-success">merged</span>
+                ) : (
+                  status.mergedIntoBase &&
+                  !worktree.isMain && <span className="text-success">merged</span>
                 )}
               </>
             )}

@@ -8,6 +8,7 @@ import {
   SlidersHorizontal,
   Star,
   ChevronDown,
+  Loader2,
 } from 'lucide-react'
 import type { Repository } from '@worktree/contracts'
 import { useAppStore } from '../store'
@@ -403,6 +404,12 @@ export function Dashboard() {
               </div>
 
               <div className="flex-1 overflow-auto p-4">
+                {loading && (
+                  <div className="mb-2 flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-xs text-muted">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    Fetching worktree statuses…
+                  </div>
+                )}
                 {repoWorktrees.length === 0 ? (
                   <div className="flex h-full flex-col items-center justify-center gap-2 text-muted">
                     <p className="text-sm">No worktrees match this filter.</p>

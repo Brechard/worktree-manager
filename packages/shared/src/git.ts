@@ -298,6 +298,14 @@ export async function pullWorktree(cwd: string): Promise<GitActionResult> {
   }
 }
 
+export async function rebaseWorktree(cwd: string): Promise<GitActionResult> {
+  const { stdout, stderr, exitCode } = await runGit(cwd, ['pull', '--rebase'])
+  return {
+    success: exitCode === 0,
+    output: exitCode === 0 ? stdout || 'Rebased' : stderr || 'Rebase failed',
+  }
+}
+
 export async function pushWorktree(cwd: string): Promise<GitActionResult> {
   const current = await getCurrentBranch(cwd)
   const { stdout, stderr, exitCode } = await runGit(cwd, ['push', '-u', 'origin', current])

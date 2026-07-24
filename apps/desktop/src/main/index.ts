@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, nativeTheme, safeStorage, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, nativeImage, nativeTheme, safeStorage, shell } from 'electron'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { existsSync } from 'node:fs'
@@ -16,6 +16,7 @@ import {
   parseProviderFromRemoteUrl,
   pullWorktree,
   pushWorktree,
+  rebaseWorktree,
   refreshPullRequest,
   runCommand,
 } from '@worktree/shared'
@@ -108,6 +109,19 @@ async function saveWorktrees(worktrees: Worktree[]) {
   await writeFile(worktreesPath(), JSON.stringify(worktrees, null, 2))
 }
 
+function getIconPath(): string | undefined {
+  const candidates = [
+    join(app.getAppPath(), 'resources', 'icon.png'),
+    join(__dirname, '..', '..', 'resources', 'icon.png'),
+    join(__dirname, '..', 'resources', 'icon.png'),
+    join(process.resourcesPath, 'icon.png'),
+  ]
+  for (const p of candidates) {
+    if (existsSync(p)) return p
+  }
+  return undefined
+}
+
 const EDITOR_LAUNCHERS: Record<string, { commands: string[]; macApp?: string }> = {
   cursor: { commands: ['cursor'], macApp: 'Cursor' },
   windsurf: { commands: ['windsurf'], macApp: 'Windsurf' },
@@ -129,6 +143,7 @@ const EDITOR_LAUNCHERS: Record<string, { commands: string[]; macApp?: string }> 
 }
 
 async function createWindow() {
+  const iconPath = getIconPath()
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -138,6 +153,7 @@ async function createWindow() {
     trafficLightPosition: { x: 16, y: 16 },
     backgroundColor: '#0b1220',
     show: false,
+    ...(iconPath ? { icon: iconPath } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.mjs'),
       contextIsolation: true,
@@ -145,6 +161,10 @@ async function createWindow() {
       sandbox: false,
     },
   })
+
+  if (iconPath && process.platform === 'darwin' && app.dock) {
+    app.dock.setIcon(nativeImage.createFromPath(iconPath))
+  }
 
   win.once('ready-to-show', () => {
     win.show()
@@ -258,6 +278,10 @@ ipcMain.handle(
 
 ipcMain.handle('pull-worktree', async (_, path: string) => {
   return pullWorktree(path)
+})
+
+ipcMain.handle('rebase-worktree', async (_, path: string) => {
+  return rebaseWorktree(path)
 })
 
 ipcMain.handle('push-worktree', async (_, path: string) => {

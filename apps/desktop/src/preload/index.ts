@@ -56,6 +56,9 @@ const api = {
   pullWorktree: (path: string): Promise<{ success: boolean; output: string }> =>
     ipcRenderer.invoke('pull-worktree', path),
 
+  rebaseWorktree: (path: string): Promise<{ success: boolean; output: string }> =>
+    ipcRenderer.invoke('rebase-worktree', path),
+
   pushWorktree: (path: string): Promise<{ success: boolean; output: string }> =>
     ipcRenderer.invoke('push-worktree', path),
 

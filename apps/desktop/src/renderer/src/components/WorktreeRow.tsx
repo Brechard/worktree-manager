@@ -16,6 +16,8 @@ import {
   FileClock,
   Download,
   Upload,
+  RefreshCw,
+  FileDiff,
 } from 'lucide-react'
 import type { Repository, Worktree, WorktreeStatus, WorktreeDetails } from '@worktree/contracts'
 import { cn } from '../lib/utils'
@@ -41,7 +43,7 @@ export function WorktreeRow({
   onActionError,
   onRefresh,
 }: WorktreeRowProps) {
-  const [busy, setBusy] = useState<'editor' | 'terminal' | 'folder' | 'pull' | 'push' | 'commit' | null>(null)
+  const [busy, setBusy] = useState<'editor' | 'terminal' | 'folder' | 'pull' | 'rebase' | 'push' | 'commit' | null>(null)
   const [expanded, setExpanded] = useState(false)
   const [details, setDetails] = useState<WorktreeDetails | null>(null)
   const [loadingDetails, setLoadingDetails] = useState(false)
@@ -69,9 +71,9 @@ export function WorktreeRow({
     }
   }, [expanded, worktree, repository, details, onActionError])
 
-  const gitActions = new Set(['pull', 'push', 'commit'])
+  const gitActions = new Set(['pull', 'rebase', 'push', 'commit'])
   const run = async (
-    kind: 'editor' | 'terminal' | 'folder' | 'pull' | 'push' | 'commit',
+    kind: 'editor' | 'terminal' | 'folder' | 'pull' | 'rebase' | 'push' | 'commit',
     fn: () => Promise<{ success?: boolean; error?: string; output?: string } | string | void>
   ) => {
     setBusy(kind)
@@ -112,6 +114,7 @@ export function WorktreeRow({
   }
 
   const handlePull = () => run('pull', () => window.api.pullWorktree(worktree.path))
+  const handleRebase = () => run('rebase', () => window.api.rebaseWorktree(worktree.path))
   const handlePush = () => run('push', () => window.api.pushWorktree(worktree.path))
 
   const handleCommit = (all = false) => {
@@ -240,20 +243,39 @@ export function WorktreeRow({
           </div>
         </div>
 
-        <div className="flex shrink-0 items-center gap-0.5">
-          <IconButton title="Pull" onClick={handlePull} busy={busy === 'pull'}>
-            <Download className="h-4 w-4" />
-          </IconButton>
-          <IconButton title="Push" onClick={handlePush} busy={busy === 'push'}>
-            <Upload className="h-4 w-4" />
-          </IconButton>
-          <IconButton
-            title="Commit"
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
+          <ActionButton
+            title="Pull fast-forward"
+            onClick={handlePull}
+            busy={busy === 'pull'}
+            icon={<Download className="h-3 w-3" />}
+            label="Pull"
+            variant="secondary"
+          />
+          <ActionButton
+            title="Pull with rebase"
+            onClick={handleRebase}
+            busy={busy === 'rebase'}
+            icon={<RefreshCw className="h-3 w-3" />}
+            label="Rebase"
+            variant="secondary"
+          />
+          <ActionButton
+            title="Push branch"
+            onClick={handlePush}
+            busy={busy === 'push'}
+            icon={<Upload className="h-3 w-3" />}
+            label="Push"
+            variant="secondary"
+          />
+          <ActionButton
+            title={showCommitInput ? 'Hide commit input' : 'Commit staged changes'}
             onClick={() => setShowCommitInput((v) => !v)}
             busy={busy === 'commit'}
-          >
-            <GitCommit className="h-4 w-4" />
-          </IconButton>
+            icon={<GitCommit className="h-3 w-3" />}
+            label="Commit"
+            variant={showCommitInput ? 'primary' : 'secondary'}
+          />
           <IconButton
             title={`Open in ${editorLabel(editorId)}`}
             onClick={handleOpen}
@@ -395,17 +417,30 @@ function FileList({
       </h4>
       <ul className="space-y-0.5">
         {files.map((f, i) => (
-          <li key={`${f.path}-${i}`} title={`${f.status} ${f.path}`}>
-            <button
-              onClick={() => onFileClick?.(f)}
-              className={cn(
-                'flex w-full items-center gap-2 truncate rounded px-1.5 py-0.5 font-mono text-[11px] text-left',
-                selectedPath === f.path ? 'bg-accent text-foreground' : 'text-foreground/90 hover:bg-accent/50'
-              )}
-            >
-              <span className={cn('shrink-0 font-bold', color)}>{f.status}</span>
-              <span className="truncate">{f.path}</span>
-            </button>
+          <li key={`${f.path}-${i}`}>
+            <div className="group flex items-center gap-1">
+              <button
+                onClick={() => onFileClick?.(f)}
+                title={`${f.status} ${f.path}`}
+                className={cn(
+                  'flex flex-1 items-center gap-2 truncate rounded px-1.5 py-0.5 font-mono text-[11px] text-left',
+                  selectedPath === f.path ? 'bg-accent text-foreground' : 'text-foreground/90 hover:bg-accent/50'
+                )}
+              >
+                <span className={cn('shrink-0 font-bold', color)}>{f.status}</span>
+                <span className="truncate">{f.path}</span>
+              </button>
+              <button
+                onClick={() => onFileClick?.(f)}
+                title="View diff"
+                className={cn(
+                  'shrink-0 rounded p-1 text-muted opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100',
+                  selectedPath === f.path && 'opacity-100'
+                )}
+              >
+                <FileDiff className="h-3 w-3" />
+              </button>
+            </div>
             {selectedPath === f.path && (
               <div className="mt-1 rounded-md border border-border bg-background p-2">
                 {loadingDiff ? (
@@ -426,6 +461,39 @@ function FileList({
         ))}
       </ul>
     </div>
+  )
+}
+
+function ActionButton({
+  icon,
+  label,
+  title,
+  onClick,
+  busy,
+  variant = 'secondary',
+}: {
+  icon: ReactNode
+  label: string
+  title: string
+  onClick: () => void
+  busy?: boolean
+  variant?: 'primary' | 'secondary'
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      disabled={busy}
+      className={cn(
+        'inline-flex items-center gap-1 rounded-md px-2 py-1 text-[10px] font-medium transition-colors disabled:opacity-50',
+        variant === 'primary'
+          ? 'bg-primary text-primary-foreground hover:bg-primary/90'
+          : 'bg-muted/60 text-foreground hover:bg-accent'
+      )}
+    >
+      {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : icon}
+      {label}
+    </button>
   )
 }
 

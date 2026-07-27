@@ -14,7 +14,8 @@ interface AppState {
   setRepositories: (repositories: Repository[]) => void
   setWorktrees: (worktrees: Worktree[]) => void
   setStatuses: (statuses: WorktreeStatus[]) => void
-  patchStatus: (worktreeId: string, patch: Partial<WorktreeStatus>) => void
+  setStatus: (worktreeId: string, status: WorktreeStatus) => void
+  applyBranchChange: (worktreeId: string, branch: string) => void
   updateRepository: (repository: Repository) => void
   setScanProgress: (progress: AppState['scanProgress']) => void
   setSelectedRepositoryId: (id: string | null) => void
@@ -43,16 +44,32 @@ export const useAppStore = create<AppState>((set, get) => ({
         {} as Record<string, WorktreeStatus>
       ),
     }),
-  // Merge a single worktree's status into the map without touching the others —
-  // used for optimistic updates and targeted (single-worktree) refreshes so a
-  // git action doesn't have to re-sync every worktree in every repo.
-  patchStatus: (worktreeId, patch) =>
-    set((state) => ({
-      statuses: {
-        ...state.statuses,
-        [worktreeId]: { ...state.statuses[worktreeId], ...patch } as WorktreeStatus,
-      },
-    })),
+  // Replace one worktree's status outright. Targeted refreshes must not merge:
+  // fields the fresh status omits (a `pullRequest` that no longer applies after
+  // checking the base branch back out) would otherwise survive the update.
+  setStatus: (worktreeId, status) =>
+    set((state) => ({ statuses: { ...state.statuses, [worktreeId]: status } })),
+  // Show a branch switch the instant it is known — before the targeted refresh,
+  // which fetches the base ref over the network and can take seconds. The PR
+  // goes with it: it described the branch we just left, so keeping it on screen
+  // until the refresh lands is showing a badge we already know is wrong.
+  applyBranchChange: (worktreeId, branch) =>
+    set((state) => {
+      const current = state.statuses[worktreeId]
+      if (!current) return {}
+      const { pullRequest: _staleForNewBranch, ...withoutPullRequest } = current
+      return {
+        statuses: {
+          ...state.statuses,
+          [worktreeId]: {
+            ...withoutPullRequest,
+            branch,
+            detached: branch === 'HEAD',
+            hasOpenPR: false,
+          },
+        },
+      }
+    }),
   updateRepository: (repository) =>
     set({
       repositories: get().repositories.map((r) =>

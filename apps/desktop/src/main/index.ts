@@ -11,7 +11,7 @@ import {
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { existsSync } from 'node:fs'
-import { readFile, writeFile, mkdir, copyFile } from 'node:fs/promises'
+import { readFile, writeFile, mkdir, copyFile, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { z } from 'zod'
 import {
@@ -23,7 +23,10 @@ import {
   evaluateSafety,
   getFileDiff,
   getBranches,
+  getCurrentBranch,
   getDefaultBranch,
+  getGitDir,
+  getHeadCommit,
   getWorktreeDetails,
   getWorktreeStatus,
   mergeBranch,
@@ -443,14 +446,12 @@ ipcMain.handle(
         const worktree = args.worktrees[i]!
         const repo = repositoriesById.get(worktree.repositoryId)
         if (repo) {
-          const pullRequest = await refreshPullRequest(worktree, repo, globalTokens).catch(
-            () => undefined
-          )
           const baseSnapshot = baseSnapshots.get(repo.id)
           results[i] = await getWorktreeStatus({
             worktree,
             repository: repo,
-            pullRequest: pullRequest ?? null,
+            resolvePullRequest: (branch) =>
+              refreshPullRequest(branch, repo, globalTokens).catch(() => undefined),
             ...(baseSnapshot ? { baseSnapshot } : {}),
           }).catch(() => null)
         }
@@ -482,19 +483,129 @@ ipcMain.handle(
     // merged/unmerged verdict right after a pull or push was computed against a
     // base that may not have been fetched in days — and then silently flipped
     // on the next full refresh.
-    const [pullRequest, baseSnapshot] = await Promise.all([
-      refreshPullRequest(args.worktree, args.repository, globalTokens).catch(() => undefined),
-      refreshBaseBranch(
-        statusCwd(args.repository, [args.worktree]),
-        args.repository.baseBranch || 'main'
-      ).catch(() => undefined),
-    ])
+    const baseSnapshot = await refreshBaseBranch(
+      statusCwd(args.repository, [args.worktree]),
+      args.repository.baseBranch || 'main'
+    ).catch(() => undefined)
     return getWorktreeStatus({
       worktree: args.worktree,
       repository: args.repository,
-      pullRequest: pullRequest ?? null,
+      resolvePullRequest: (branch) =>
+        refreshPullRequest(branch, args.repository, globalTokens).catch(() => undefined),
       ...(baseSnapshot ? { baseSnapshot } : {}),
     })
+  }
+)
+
+// Branch switches made outside the app (a checkout in a terminal) rewrite the
+// worktree's HEAD, so watching it reports them in the moment instead of on the
+// renderer's next poll. Keyed by worktree id; the renderer re-registers the
+// set whenever the visible project changes.
+//
+// Stat polling rather than `fs.watch`: git replaces HEAD by renaming HEAD.lock
+// over it, so a file watcher ends up on the dead inode, and watching the parent
+// directory never reported the replacement at all on macOS (measured: only
+// FETCH_HEAD/index.lock events came through). `fs.watchFile` reads the right
+// thing but its poll timer misbehaved inside Electron's main loop — several
+// seconds late when unref'd, silent when not — so the timer is ours. One stat
+// per visible worktree per second is still far cheaper than the `rev-parse` per
+// worktree the fallback below costs.
+const HEAD_POLL_INTERVAL = 1000
+
+interface HeadWatch {
+  worktree: Worktree
+  headPath: string
+  mtimeMs: number
+}
+
+const headWatches = new Map<string, HeadWatch>()
+let headPollTimer: NodeJS.Timeout | undefined
+
+function stopHeadPoll() {
+  if (!headPollTimer) return
+  clearInterval(headPollTimer)
+  headPollTimer = undefined
+}
+
+app.on('before-quit', () => {
+  headWatches.clear()
+  stopHeadPoll()
+})
+
+async function pollHeads(sender: Electron.WebContents) {
+  if (sender.isDestroyed()) {
+    headWatches.clear()
+    stopHeadPoll()
+    return
+  }
+
+  await Promise.all(
+    Array.from(headWatches.values()).map(async (watch) => {
+      const stats = await stat(watch.headPath).catch(() => undefined)
+      if (!stats || stats.mtimeMs === watch.mtimeMs) return
+      watch.mtimeMs = stats.mtimeMs
+
+      const [branch, headCommit] = await Promise.all([
+        getCurrentBranch(watch.worktree.path).catch(() => undefined),
+        getHeadCommit(watch.worktree.path).catch(() => undefined),
+      ])
+      if (!branch || sender.isDestroyed()) return
+      sender.send('worktree-head-changed', {
+        worktreeId: watch.worktree.id,
+        branch,
+        ...(headCommit ? { headCommit } : {}),
+      })
+    })
+  )
+}
+
+ipcMain.handle(
+  'watch-worktree-heads',
+  async (event, args: { worktrees: Worktree[] }): Promise<number> => {
+    const wanted = args.worktrees.filter((worktree) => !worktree.prunable)
+    const keep = new Set(wanted.map((worktree) => worktree.id))
+    for (const worktreeId of headWatches.keys()) {
+      if (!keep.has(worktreeId)) headWatches.delete(worktreeId)
+    }
+
+    await Promise.all(
+      wanted.map(async (worktree) => {
+        if (headWatches.has(worktree.id)) return
+        const gitDir = await getGitDir(worktree.path).catch(() => undefined)
+        if (!gitDir) return
+        const headPath = join(gitDir, 'HEAD')
+        const stats = await stat(headPath).catch(() => undefined)
+        if (!stats) return
+        headWatches.set(worktree.id, { worktree, headPath, mtimeMs: stats.mtimeMs })
+      })
+    )
+
+    stopHeadPoll()
+    if (headWatches.size > 0) {
+      headPollTimer = setInterval(() => void pollHeads(event.sender), HEAD_POLL_INTERVAL)
+    }
+
+    return headWatches.size
+  }
+)
+
+// Fallback for anything the watchers miss. A cheap, local-only read of every
+// worktree's current branch: one `rev-parse` each, no network and no status
+// plumbing, so the renderer can re-sync only the rows that actually moved.
+ipcMain.handle(
+  'get-worktree-branches',
+  async (
+    _,
+    args: { worktrees: Worktree[] }
+  ): Promise<{ worktreeId: string; branch: string }[]> => {
+    const entries = await Promise.all(
+      args.worktrees.map(async (worktree) => {
+        if (worktree.prunable) return undefined
+        const branch = await getCurrentBranch(worktree.path).catch(() => undefined)
+        return branch ? { worktreeId: worktree.id, branch } : undefined
+      })
+    )
+    return entries.filter((entry): entry is { worktreeId: string; branch: string } => !!entry)
   }
 )
 

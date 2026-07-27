@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   RefreshCw,
   Settings as SettingsIcon,
@@ -55,7 +55,8 @@ export function Dashboard() {
     selectedRepositoryId,
     settings,
     setStatuses,
-    patchStatus,
+    setStatus,
+    applyBranchChange,
     setSettings,
     setView,
     setRepositories,
@@ -73,6 +74,8 @@ export function Dashboard() {
   const [statusProgress, setStatusProgress] = useState<{ current: number; total: number } | null>(
     null
   )
+  const [refreshingIds, setRefreshingIds] = useState<Set<string>>(new Set())
+  const refreshSeq = useRef(new Map<string, number>())
   const [baseStatuses, setBaseStatuses] = useState<Record<string, RepositoryBaseStatus>>({})
   const [baseUpdating, setBaseUpdating] = useState(false)
 
@@ -98,14 +101,113 @@ export function Dashboard() {
   }
 
   // Refresh just one worktree's status (git + PR for that worktree only) and
-  // merge it in — used after a git action instead of the full loadStatuses,
+  // swap it in — used after a git action instead of the full loadStatuses,
   // which re-scans every worktree in every repo and does a PR lookup per row.
   const refreshWorktreeStatus = async (worktree: Worktree) => {
-    const repo = repositories.find((r) => r.id === worktree.repositoryId)
+    // Read through the store rather than the render closure: the branch poll
+    // below holds onto this function across renders.
+    const repo = useAppStore
+      .getState()
+      .repositories.find((r) => r.id === worktree.repositoryId)
     if (!repo) return
-    const status = await api.getWorktreeStatus({ worktree, repository: repo })
-    patchStatus(worktree.id, status)
+
+    // One refresh takes seconds (it fetches the base ref), so two branch
+    // switches in quick succession overlap — and the first response, describing
+    // a branch we have already left, would land last and win. Only the newest
+    // request for a row may write to it.
+    const request = (refreshSeq.current.get(worktree.id) ?? 0) + 1
+    refreshSeq.current.set(worktree.id, request)
+    const isCurrent = () => refreshSeq.current.get(worktree.id) === request
+
+    setRefreshingIds((ids) => new Set(ids).add(worktree.id))
+    try {
+      const status = await api.getWorktreeStatus({ worktree, repository: repo })
+      if (isCurrent()) setStatus(worktree.id, status)
+    } finally {
+      if (isCurrent()) {
+        setRefreshingIds((ids) => {
+          const next = new Set(ids)
+          next.delete(worktree.id)
+          return next
+        })
+      }
+    }
   }
+
+  // Branches also change outside the app — a checkout in a terminal — and the
+  // PR badge is derived from the live branch, so a stale row shows the wrong
+  // PR (or none). The main process watches each visible worktree's HEAD and
+  // reports switches as they happen; the timer is only a backstop for paths a
+  // watcher can't cover, which is why it can run this slowly. Either way only
+  // rows that actually moved pay for a full re-sync (git + PR lookup).
+  const watchedWorktreeIds = useMemo(
+    () =>
+      worktrees
+        .filter((w) => w.repositoryId === selectedRepositoryId && !w.prunable)
+        .map((w) => w.id)
+        .join(','),
+    [worktrees, selectedRepositoryId]
+  )
+
+  useEffect(() => {
+    if (!selectedRepositoryId) return
+    let cancelled = false
+
+    const resync = (worktreeId: string, branch: string) => {
+      const state = useAppStore.getState()
+      const worktree = state.worktrees.find((w) => w.id === worktreeId)
+      const known = state.statuses[worktreeId]
+      if (!worktree || !known) return
+      // Show the new branch (and drop the old branch's PR) right away, then
+      // let the refresh fill in the rest — the row spins meanwhile.
+      if (known.branch !== branch) applyBranchChange(worktreeId, branch)
+      void refreshWorktreeStatus(worktree)
+    }
+
+    const watched = useAppStore
+      .getState()
+      .worktrees.filter((w) => w.repositoryId === selectedRepositoryId && !w.prunable)
+    void api.watchWorktreeHeads({ worktrees: watched }).catch(() => undefined)
+
+    const removeHeadListener = api.onWorktreeHeadChanged(({ worktreeId, branch, headCommit }) => {
+      if (cancelled) return
+      const known = useAppStore.getState().statuses[worktreeId]
+      // The app's own git actions move HEAD too, and they already refresh the
+      // row — skip the echo.
+      if (!known || (known.branch === branch && known.headCommit === headCommit)) return
+      resync(worktreeId, branch)
+    })
+
+    const syncBranches = async () => {
+      if (document.hidden || cancelled) return
+      const state = useAppStore.getState()
+      const watched = state.worktrees.filter(
+        (w) => w.repositoryId === selectedRepositoryId && !w.prunable
+      )
+      if (watched.length === 0) return
+
+      const current = await api.getWorktreeBranches({ worktrees: watched }).catch(() => [])
+      if (cancelled) return
+
+      for (const { worktreeId, branch } of current) {
+        if (useAppStore.getState().statuses[worktreeId]?.branch === branch) continue
+        resync(worktreeId, branch)
+      }
+    }
+
+    const interval = window.setInterval(syncBranches, 60_000)
+    window.addEventListener('focus', syncBranches)
+    document.addEventListener('visibilitychange', syncBranches)
+    void syncBranches()
+    return () => {
+      cancelled = true
+      removeHeadListener()
+      window.clearInterval(interval)
+      window.removeEventListener('focus', syncBranches)
+      document.removeEventListener('visibilitychange', syncBranches)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedRepositoryId, watchedWorktreeIds])
 
   useEffect(() => {
     const remove = api.onScanProgress((progress) => setScanProgress(progress))
@@ -490,34 +592,27 @@ export function Dashboard() {
         </aside>
 
         <main className="relative flex min-w-0 flex-1 flex-col">
-          {(scanning || loading) && (
+          {scanning && (
             <div className="pointer-events-none absolute inset-x-0 bottom-4 z-20 flex flex-col items-center gap-2 px-4">
-              {scanning && (
-                <div className="pointer-events-auto flex max-w-full items-center gap-2 rounded-full border border-border bg-card/95 px-3.5 py-2 text-xs text-muted shadow-lg backdrop-blur">
-                  <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
-                  <span className="truncate">
-                    {scanProgress
-                      ? `Scanning… ${scanProgress.found} found · ${scanProgress.current} folders${scanProgress.currentPath ? ` · ${shortenPath(scanProgress.currentPath)}` : ''}`
-                      : 'Scanning folders…'}
-                  </span>
-                </div>
-              )}
-              {loading && (
-                <div className="pointer-events-auto flex items-center gap-2 rounded-full border border-border bg-card/95 px-3.5 py-2 text-xs text-muted shadow-lg backdrop-blur">
-                  <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
-                  {statusProgress && statusProgress.total > 0
-                    ? `Fetching worktree statuses… ${statusProgress.current}/${statusProgress.total}`
-                    : 'Fetching worktree statuses…'}
-                </div>
-              )}
+              <div className="pointer-events-auto flex max-w-full items-center gap-2 rounded-full border border-border bg-card/95 px-3.5 py-2 text-xs text-muted shadow-lg backdrop-blur">
+                <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+                <span className="truncate">
+                  {scanProgress
+                    ? `Scanning… ${scanProgress.found} found · ${scanProgress.current} folders${scanProgress.currentPath ? ` · ${shortenPath(scanProgress.currentPath)}` : ''}`
+                    : 'Scanning folders…'}
+                </span>
+              </div>
             </div>
           )}
           {selectedRepo ? (
             <>
               <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-5 py-4">
                 <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <h2 className="truncate text-base font-semibold tracking-tight">
+                  {/* Name, provider and base freshness read as one line of
+                      project metadata; they only wrap once the pane is too
+                      narrow to hold them. */}
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+                    <h2 className="min-w-0 truncate text-base font-semibold tracking-tight">
                       {selectedRepo.name}
                     </h2>
                     <button
@@ -538,14 +633,6 @@ export function Dashboard() {
                         {selectedRepo.provider.source === 'remote' ? ' · auto' : ''}
                       </span>
                     )}
-                  </div>
-                  <p
-                    className="mt-0.5 truncate font-mono text-xs text-muted"
-                    title={selectedRepo.path}
-                  >
-                    {shortenPath(selectedRepo.path)}
-                  </p>
-                  <div className="mt-2">
                     <BaseBranchStatus
                       status={baseStatuses[selectedRepo.id]}
                       busy={loading || baseUpdating}
@@ -553,6 +640,12 @@ export function Dashboard() {
                       onUpdate={updateSelectedBase}
                     />
                   </div>
+                  <p
+                    className="mt-1 truncate font-mono text-xs text-muted"
+                    title={selectedRepo.path}
+                  >
+                    {shortenPath(selectedRepo.path)}
+                  </p>
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2">
@@ -663,51 +756,66 @@ export function Dashboard() {
                 </div>
               </div>
 
-              <div className="flex-1 overflow-auto p-4">
-                {repoWorktrees.length === 0 ? (
-                  <div className="flex h-full flex-col items-center justify-center gap-2 text-muted">
-                    <p className="text-sm">No worktrees match this filter.</p>
-                  </div>
-                ) : (
-                  <div className="overflow-hidden rounded-xl border border-border bg-card">
-                    {worktreeSections.map((section, sectionIndex) => (
-                      <section
-                        key={section.key}
-                        className={cn(sectionIndex > 0 && 'border-t border-border')}
-                      >
-                        {section.label && (
-                          <div className="flex items-center justify-between border-b border-border bg-accent/35 px-4 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted">
-                            <span className="inline-flex items-center gap-1.5">
-                              {section.key === 'safe' ? (
-                                <ShieldCheck className="h-3.5 w-3.5 text-success" />
-                              ) : (
-                                <ArrowDownUp className="h-3.5 w-3.5" />
-                              )}
-                              {section.label}
-                            </span>
-                            <span className="font-mono text-[10px] text-muted/80">
-                              {section.worktrees.length}
-                            </span>
-                          </div>
-                        )}
-                        {section.worktrees.map((w) => (
-                          <WorktreeRow
-                            key={w.id}
-                            worktree={w}
-                            repository={selectedRepo}
-                            status={statuses[w.id]}
-                            editorId={effectiveEditor}
-                            onDelete={handleDelete}
-                            onActionError={setActionError}
-                            onRefresh={loadStatuses}
-                            onRefreshWorktree={refreshWorktreeStatus}
-                            onPatchStatus={patchStatus}
-                          />
-                        ))}
-                      </section>
-                    ))}
+              <div className="relative flex-1 overflow-hidden">
+                {loading && (
+                  <div className="pointer-events-none absolute inset-x-0 top-3 z-20 flex justify-center px-4">
+                    <div className="pointer-events-auto flex items-center gap-2 rounded-full border border-warning/50 bg-warning/20 px-3.5 py-2 text-xs font-semibold text-warning shadow-lg backdrop-blur">
+                      <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+                      <span className="truncate">
+                        {statusProgress && statusProgress.total > 0
+                          ? `Fetching worktree statuses… ${statusProgress.current}/${statusProgress.total}`
+                          : 'Fetching worktree statuses…'}
+                      </span>
+                    </div>
                   </div>
                 )}
+                <div className="h-full overflow-auto p-4">
+                  {repoWorktrees.length === 0 ? (
+                    <div className="flex h-full flex-col items-center justify-center gap-2 text-muted">
+                      <p className="text-sm">No worktrees match this filter.</p>
+                    </div>
+                  ) : (
+                    <div className="overflow-hidden rounded-xl border border-border bg-card">
+                      {worktreeSections.map((section, sectionIndex) => (
+                        <section
+                          key={section.key}
+                          className={cn(sectionIndex > 0 && 'border-t border-border')}
+                        >
+                          {section.label && (
+                            <div className="flex items-center justify-between border-b border-border bg-accent/35 px-4 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted">
+                              <span className="inline-flex items-center gap-1.5">
+                                {section.key === 'safe' ? (
+                                  <ShieldCheck className="h-3.5 w-3.5 text-success" />
+                                ) : (
+                                  <ArrowDownUp className="h-3.5 w-3.5" />
+                                )}
+                                {section.label}
+                              </span>
+                              <span className="font-mono text-[10px] text-muted/80">
+                                {section.worktrees.length}
+                              </span>
+                            </div>
+                          )}
+                          {section.worktrees.map((w) => (
+                            <WorktreeRow
+                              key={w.id}
+                              worktree={w}
+                              repository={selectedRepo}
+                              status={statuses[w.id]}
+                              refreshing={refreshingIds.has(w.id)}
+                              editorId={effectiveEditor}
+                              onDelete={handleDelete}
+                              onActionError={setActionError}
+                              onRefresh={loadStatuses}
+                              onRefreshWorktree={refreshWorktreeStatus}
+                              onBranchChange={applyBranchChange}
+                            />
+                          ))}
+                        </section>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             </>
           ) : (

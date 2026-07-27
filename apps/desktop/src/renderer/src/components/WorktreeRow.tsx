@@ -19,6 +19,7 @@ import {
   AlertTriangle,
 } from 'lucide-react'
 import type { Repository, Worktree, WorktreeStatus, WorktreeDetails } from '@worktree/contracts'
+import { branchCanHavePullRequest } from '@worktree/contracts'
 import { cn } from '../lib/utils'
 import { editorLabel, shortenPath } from '../lib/paths'
 import { api } from '../api'
@@ -30,24 +31,27 @@ interface WorktreeRowProps {
   worktree: Worktree
   repository: Repository
   status?: WorktreeStatus | undefined
+  /** A targeted re-sync of this row is in flight (git + PR lookup). */
+  refreshing?: boolean
   editorId: string
   onDelete: (worktree: Worktree) => void
   onActionError?: (message: string) => void
   onRefresh?: () => void
   onRefreshWorktree?: (worktree: Worktree) => Promise<void> | void
-  onPatchStatus?: (worktreeId: string, patch: Partial<WorktreeStatus>) => void
+  onBranchChange?: (worktreeId: string, branch: string) => void
 }
 
 export function WorktreeRow({
   worktree,
   repository,
   status,
+  refreshing,
   editorId,
   onDelete,
   onActionError,
   onRefresh,
   onRefreshWorktree,
-  onPatchStatus,
+  onBranchChange,
 }: WorktreeRowProps) {
   const [busy, setBusy] = useState<
     | 'editor'
@@ -183,9 +187,10 @@ export function WorktreeRow({
 
   const handleLoadBranches = () => window.api.getRepoBranches(worktree.path).then((r) => r.branches)
   const handleCheckout = (branch: string) => {
-    // Swap the branch label immediately; the targeted refresh in run() then
-    // corrects the rest (head commit, ahead/behind, merged) a moment later.
-    onPatchStatus?.(worktree.id, { branch, detached: false })
+    // Swap the branch label immediately (and clear the outgoing branch's PR);
+    // the targeted refresh in run() then corrects the rest (head commit,
+    // ahead/behind, merged) a moment later.
+    onBranchChange?.(worktree.id, branch)
     run('checkout', () => window.api.checkoutBranch({ path: worktree.path, branch }))
   }
   const handleMerge = (branch: string, mode: MergeMode) =>
@@ -283,6 +288,16 @@ export function WorktreeRow({
     prTargetBranch !== undefined &&
     prTargetBranch !== status.baseBranch
 
+  // The base branch is never the head of a PR into itself, and a detached HEAD
+  // has no branch to look one up by — so those rows have no PR slot at all,
+  // not even a pending one. Checking out a feature branch flips this back on
+  // and the badge fills in as soon as the re-sync lands.
+  const prPending =
+    refreshing === true &&
+    repository.provider !== undefined &&
+    !prunable &&
+    branchCanHavePullRequest(liveBranch, status?.baseBranch ?? repository.baseBranch)
+
   return (
     <div className="border-b border-border last:border-b-0 hover:bg-row-hover">
       <div className="flex items-center justify-between gap-3 px-4 py-3">
@@ -334,7 +349,7 @@ export function WorktreeRow({
                 Stale · folder missing
               </span>
             )}
-            {status?.pullRequest && (
+            {status?.pullRequest ? (
               <button
                 onClick={(e) => {
                   e.stopPropagation()
@@ -353,7 +368,11 @@ export function WorktreeRow({
                     : status.pullRequest.title
                 }
               >
-                <ExternalLink className="h-3 w-3 shrink-0" />
+                {prPending ? (
+                  <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+                ) : (
+                  <ExternalLink className="h-3 w-3 shrink-0" />
+                )}
                 <span className="truncate">
                   {mergedIntoOtherBranch
                     ? `merged into ${prTargetBranch}`
@@ -363,6 +382,16 @@ export function WorktreeRow({
                   · {status.pullRequest.title}
                 </span>
               </button>
+            ) : (
+              prPending && (
+                <span
+                  className="inline-flex items-center gap-1 rounded-md bg-accent px-2 py-0.5 text-xs font-medium text-muted"
+                  title={`Looking up the pull request for ${liveBranch}…`}
+                >
+                  <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+                  pull request
+                </span>
+              )
             )}
             {!safe && !worktree.isMain && !prunable && (
               <span className="rounded-md bg-destructive/15 px-2 py-0.5 text-[10px] font-medium text-destructive">

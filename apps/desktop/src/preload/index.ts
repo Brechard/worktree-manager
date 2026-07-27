@@ -44,6 +44,25 @@ const api = {
     repository: Repository
   }): Promise<WorktreeStatus> => ipcRenderer.invoke('get-worktree-status', args),
 
+  watchWorktreeHeads: (args: { worktrees: Worktree[] }): Promise<number> =>
+    ipcRenderer.invoke('watch-worktree-heads', args),
+
+  onWorktreeHeadChanged: (
+    callback: (change: { worktreeId: string; branch: string; headCommit?: string }) => void
+  ): (() => void) => {
+    const listener = (
+      _: unknown,
+      change: { worktreeId: string; branch: string; headCommit?: string }
+    ) => callback(change)
+    ipcRenderer.on('worktree-head-changed', listener)
+    return () => ipcRenderer.removeListener('worktree-head-changed', listener)
+  },
+
+  getWorktreeBranches: (args: {
+    worktrees: Worktree[]
+  }): Promise<{ worktreeId: string; branch: string }[]> =>
+    ipcRenderer.invoke('get-worktree-branches', args),
+
   getWorktreeDetails: (args: {
     worktree: Worktree
     repository: Repository

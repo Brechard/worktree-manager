@@ -6,7 +6,7 @@ import type {
   Worktree,
   WorktreeStatus,
 } from '@worktree/contracts'
-import { worktreeSafetyReasons } from '@worktree/contracts'
+import { branchCanHavePullRequest, worktreeSafetyReasons } from '@worktree/contracts'
 import {
   countUnpushed,
   getAheadBehind,
@@ -25,13 +25,16 @@ import { lookupPullRequest } from './providers.js'
 export interface StatusOptions {
   worktree: Worktree
   repository: Repository
-  pullRequest?: PullRequest | null
+  /** Looks up the PR for a branch. Called with the *live* branch resolved
+   *  below rather than the one captured at scan time, and only when that
+   *  branch can have a PR at all — see `branchCanHavePullRequest`. */
+  resolvePullRequest?: (branch: string) => Promise<PullRequest | undefined>
   /** One repository-level ref snapshot shared by all of its worktrees. */
   baseSnapshot?: BaseBranchSnapshot
 }
 
 export async function getWorktreeStatus(options: StatusOptions): Promise<WorktreeStatus> {
-  const { worktree, repository, pullRequest, baseSnapshot } = options
+  const { worktree, repository, resolvePullRequest, baseSnapshot } = options
   const cwd = worktree.path
   const baseBranch = baseSnapshot?.baseBranch ?? repository.baseBranch ?? 'main'
 
@@ -67,6 +70,13 @@ export async function getWorktreeStatus(options: StatusOptions): Promise<Worktre
 
   const hasRemoteConfigured = await hasRemote(cwd).catch(() => false)
   const detached = branch === 'HEAD'
+
+  // Keyed off the live branch, so checking out a different branch swaps the PR
+  // (and dropping back onto the base drops it) on the very next refresh. It has
+  // to run after the git reads rather than alongside them for that reason.
+  const pullRequest = branchCanHavePullRequest(branch, resolvedBase)
+    ? await resolvePullRequest?.(branch)
+    : undefined
 
   const worktreeStatus: WorktreeStatus = {
     worktreeId: worktree.id,
@@ -109,13 +119,14 @@ export function toRepositoryBaseStatus(
 }
 
 export async function refreshPullRequest(
-  worktree: Worktree,
+  branch: string,
   repository: Repository,
   globalTokens?: { github?: string; azure?: string }
 ): Promise<PullRequest | undefined> {
   if (!repository.provider) return undefined
+  if (!branchCanHavePullRequest(branch, repository.baseBranch || 'main')) return undefined
   try {
-    return await lookupPullRequest(worktree.branch, repository, globalTokens)
+    return await lookupPullRequest(branch, repository, globalTokens)
   } catch {
     return undefined
   }

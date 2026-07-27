@@ -36,7 +36,7 @@ export function BaseBranchStatus({
 }: BaseBranchStatusProps) {
   if (!status) {
     return (
-      <div className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1.5 text-xs text-muted">
+      <div className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-border bg-card px-2 py-1 text-xs text-muted">
         <Cloud className="h-3.5 w-3.5" />
         Checking base…
       </div>
@@ -55,7 +55,7 @@ export function BaseBranchStatus({
   return (
     <div
       className={cn(
-        'inline-flex min-w-0 items-center gap-1.5 rounded-md border px-2 py-1 text-xs',
+        'inline-flex min-w-0 shrink-0 items-center gap-1.5 rounded-md border px-2 py-1 text-xs',
         healthy
           ? 'border-success/30 bg-success/5 text-success'
           : uncertain

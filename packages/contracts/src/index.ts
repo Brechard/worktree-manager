@@ -66,6 +66,22 @@ export const pullRequestSchema = z.object({
 })
 export type PullRequest = z.infer<typeof pullRequestSchema>
 
+/**
+ * A pull request is a proposal to merge *this* branch into the base, so the
+ * base branch itself never has one of its own, and a detached HEAD has no
+ * branch to look one up by. Asking the provider anyway matches on "most recent
+ * PR whose head is this branch", which for a trunk returns whatever release-
+ * style PR once shipped from it — and then pins that stale badge to the row
+ * forever. Shared so the main-process lookup and the renderer's badge agree.
+ */
+export function branchCanHavePullRequest(
+  branch: string | undefined,
+  baseBranch: string
+): boolean {
+  if (!branch || branch === 'HEAD') return false
+  return branch !== baseBranch
+}
+
 export const baseBranchSyncStateSchema = z.enum([
   'current',
   'behind',

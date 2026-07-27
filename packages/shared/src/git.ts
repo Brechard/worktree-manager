@@ -31,6 +31,14 @@ export async function getCurrentBranch(cwd: string): Promise<string> {
   return stdout || 'HEAD'
 }
 
+/** Absolute path of the worktree's git dir — `.git/worktrees/<name>` for a
+ *  linked worktree — which is where its own HEAD file lives. */
+export async function getGitDir(cwd: string): Promise<string | undefined> {
+  const { stdout, exitCode } = await runGit(cwd, ['rev-parse', '--absolute-git-dir'])
+  if (exitCode !== 0) return undefined
+  return stdout || undefined
+}
+
 export async function getHeadCommit(cwd: string): Promise<string | undefined> {
   const { stdout, exitCode } = await runGit(cwd, ['rev-parse', '--short', 'HEAD'])
   if (exitCode !== 0) return undefined

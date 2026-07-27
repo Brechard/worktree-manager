@@ -25,6 +25,8 @@ export const repositorySchema = z.object({
   favorite: z.boolean().default(false),
   /** Per-project editor id (falls back to app defaultEditor) */
   preferredEditor: z.string().optional(),
+  /** Optional project image URL or data URL */
+  imageUrl: z.string().optional(),
 })
 export type Repository = z.infer<typeof repositorySchema>
 

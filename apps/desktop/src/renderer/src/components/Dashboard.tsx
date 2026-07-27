@@ -245,6 +245,7 @@ export function Dashboard() {
           ...r,
           favorite: prev.favorite ?? r.favorite,
           preferredEditor: prev.preferredEditor ?? r.preferredEditor,
+          imageUrl: prev.imageUrl ?? r.imageUrl,
           // Prefer the freshly detected default branch (e.g. `dev`) over a
           // previously stored guess (older scans defaulted every repo to `main`).
           baseBranch: r.baseBranch || prev.baseBranch,
@@ -552,12 +553,20 @@ export function Dashboard() {
                           onClick={() => selectRepository(repo.id)}
                           className="flex min-w-0 flex-1 items-start gap-2 px-2.5 py-2 text-left"
                         >
-                          <FolderGit2
-                            className={cn(
-                              'mt-0.5 h-4 w-4 shrink-0',
-                              active ? 'text-primary' : 'text-muted'
-                            )}
-                          />
+                          {repo.imageUrl ? (
+                            <img
+                              src={repo.imageUrl}
+                              alt=""
+                              className="mt-0.5 h-4 w-4 shrink-0 rounded object-contain"
+                            />
+                          ) : (
+                            <FolderGit2
+                              className={cn(
+                                'mt-0.5 h-4 w-4 shrink-0',
+                                active ? 'text-primary' : 'text-muted'
+                              )}
+                            />
+                          )}
                           <span className="min-w-0 flex-1">
                             <span className="block truncate text-[13px] font-medium">
                               {repo.name}
@@ -612,6 +621,13 @@ export function Dashboard() {
                       project metadata; they only wrap once the pane is too
                       narrow to hold them. */}
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+                    {selectedRepo.imageUrl && (
+                      <img
+                        src={selectedRepo.imageUrl}
+                        alt=""
+                        className="h-5 w-5 rounded object-contain"
+                      />
+                    )}
                     <h2 className="min-w-0 truncate text-base font-semibold tracking-tight">
                       {selectedRepo.name}
                     </h2>

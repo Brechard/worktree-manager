@@ -1,5 +1,6 @@
 import { readdir, stat, readFile, readlink } from 'node:fs/promises'
-import { basename, join, dirname, isAbsolute, resolve } from 'node:path'
+import type { Dirent } from 'node:fs'
+import { basename, join, dirname, isAbsolute, resolve, extname, relative } from 'node:path'
 import type { Repository, Worktree } from '@worktree/contracts'
 import {
   getDefaultBranch,
@@ -41,6 +42,189 @@ const SKIP_DIRS = new Set([
   '.expo',
   '.cache',
 ])
+
+const MAX_IMAGE_BYTES = 2 * 1024 * 1024
+const IMAGE_DIR_CANDIDATES = [
+  '',
+  'public',
+  'app',
+  'src',
+  'src/app',
+  'assets',
+  'src/assets',
+  'static',
+  'resources',
+  'images',
+  'img',
+  'media',
+  'app-icon',
+  '.idea',
+]
+const IMAGE_NAME_CANDIDATES = [
+  'favicon',
+  'icon',
+  'logo',
+  'apple-touch-icon',
+  'app-icon',
+  'icon-rounded',
+  'brand',
+  'app',
+]
+const IMAGE_EXTENSIONS = ['.svg', '.png', '.jpg', '.jpeg', '.webp', '.ico']
+const IMAGE_MIME_TYPES: Record<string, string> = {
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.ico': 'image/x-icon',
+}
+
+const T3_JSON = 't3.json'
+
+function stripJsonComments(raw: string): string {
+  return raw
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/[^\r\n]*/g, '')
+    .replace(/,\s*([\]\}])/g, '$1')
+}
+
+async function readJsonFile<T = unknown>(path: string): Promise<T | undefined> {
+  try {
+    const raw = await readFile(path, 'utf-8')
+    return JSON.parse(stripJsonComments(raw)) as T
+  } catch {
+    return undefined
+  }
+}
+
+async function fileToDataUrl(path: string): Promise<string | undefined> {
+  try {
+    const s = await stat(path)
+    if (!s.isFile() || s.size > MAX_IMAGE_BYTES) return undefined
+    const ext = extname(path).toLowerCase()
+    const mime = IMAGE_MIME_TYPES[ext]
+    if (!mime) return undefined
+    const data = await readFile(path)
+    return `data:${mime};base64,${data.toString('base64')}`
+  } catch {
+    return undefined
+  }
+}
+
+function isWithinRepo(repoPath: string, targetPath: string): boolean {
+  const resolved = resolve(repoPath, targetPath)
+  const rel = relative(repoPath, resolved)
+  return !rel.startsWith('..') && !isAbsolute(rel)
+}
+
+export async function detectProjectImage(repoPath: string): Promise<string | undefined> {
+  // t3code-style t3.json iconPath takes precedence.
+  const t3Path = join(repoPath, T3_JSON)
+  const t3 = await readJsonFile<{ iconPath?: unknown }>(t3Path)
+  if (typeof t3?.iconPath === 'string' && isWithinRepo(repoPath, t3.iconPath)) {
+    const resolved = resolve(repoPath, t3.iconPath)
+    const dataUrl = await fileToDataUrl(resolved)
+    if (dataUrl) return dataUrl
+  }
+
+  const dirs = [...IMAGE_DIR_CANDIDATES]
+
+  // Some repos keep the real app one level down (e.g. ClubTidy.Web/clubtidy/public/favicon.ico).
+  // Scan every immediate child directory that isn't a well-known root dir.
+  const ROOT_KNOWN_DIRS = new Set([
+    'public',
+    'app',
+    'src',
+    'assets',
+    'static',
+    'resources',
+    'images',
+    'img',
+    'media',
+    'app-icon',
+    '.idea',
+    'apps',
+    'packages',
+  ])
+
+  try {
+    const rootEntries = await readdir(repoPath, { withFileTypes: true })
+    for (const e of rootEntries) {
+      if (!e.isDirectory() || e.name.startsWith('.') || SKIP_DIRS.has(e.name)) continue
+      if (ROOT_KNOWN_DIRS.has(e.name)) continue
+      dirs.push(`${e.name}/public`)
+      dirs.push(`${e.name}/app`)
+      dirs.push(`${e.name}/src`)
+      dirs.push(`${e.name}/src/app`)
+      dirs.push(`${e.name}/assets`)
+      dirs.push(`${e.name}/src/assets`)
+    }
+  } catch {
+    /* root unreadable */
+  }
+
+  for (const parent of ['apps', 'packages']) {
+    try {
+      const entries = await readdir(join(repoPath, parent), { withFileTypes: true })
+      for (const e of entries) {
+        if (!e.isDirectory() || e.name.startsWith('.') || SKIP_DIRS.has(e.name)) continue
+        dirs.push(`${parent}/${e.name}/public`)
+        dirs.push(`${parent}/${e.name}/app`)
+        dirs.push(`${parent}/${e.name}/src`)
+        dirs.push(`${parent}/${e.name}/src/app`)
+        dirs.push(`${parent}/${e.name}/assets`)
+        dirs.push(`${parent}/${e.name}/src/assets`)
+      }
+    } catch {
+      /* monorepo subdirs don't exist */
+    }
+  }
+
+  const candidatePriority = new Map<string, { dirIdx: number; nameIdx: number; extIdx: number }>()
+  dirs.forEach((_dir, dirIdx) => {
+    IMAGE_NAME_CANDIDATES.forEach((name, nameIdx) => {
+      IMAGE_EXTENSIONS.forEach((ext, extIdx) => {
+        candidatePriority.set(`${name}${ext}`, { dirIdx, nameIdx, extIdx })
+      })
+    })
+  })
+
+  for (let dirIdx = 0; dirIdx < dirs.length; dirIdx++) {
+    const dir = dirs[dirIdx]
+    const base = dir ? join(repoPath, dir) : repoPath
+    let entries: Dirent[]
+    try {
+      entries = await readdir(base, { withFileTypes: true })
+    } catch {
+      continue
+    }
+
+    let bestFile: string | undefined
+    let best = { dirIdx: Number.POSITIVE_INFINITY, nameIdx: Number.POSITIVE_INFINITY, extIdx: Number.POSITIVE_INFINITY }
+
+    for (const e of entries) {
+      if (!e.isFile() && !e.isSymbolicLink()) continue
+      const priority = candidatePriority.get(e.name)
+      if (!priority) continue
+      if (
+        priority.dirIdx < best.dirIdx ||
+        (priority.dirIdx === best.dirIdx && priority.nameIdx < best.nameIdx) ||
+        (priority.dirIdx === best.dirIdx && priority.nameIdx === best.nameIdx && priority.extIdx < best.extIdx)
+      ) {
+        best = priority
+        bestFile = e.name
+      }
+    }
+
+    if (!bestFile) continue
+    const fullPath = join(base, bestFile)
+    const dataUrl = await fileToDataUrl(fullPath)
+    if (dataUrl) return dataUrl
+  }
+
+  return undefined
+}
 
 export interface DiscoverOptions {
   roots: string[]
@@ -190,9 +374,10 @@ export async function discoverRepositories(
       const entries = await getWorktreeList(repoPath).catch(() => [])
       if (entries.length === 0) return null
 
-      const [remoteUrl, defaultBranch] = await Promise.all([
+      const [remoteUrl, defaultBranch, imageUrl] = await Promise.all([
         getDefaultRemoteUrl(repoPath).catch(() => undefined),
         getDefaultBranch(repoPath).catch(() => undefined),
+        detectProjectImage(repoPath).catch(() => undefined),
       ])
       const provider = remoteUrl ? parseProviderFromRemoteUrl(remoteUrl) : undefined
       const repo: Repository = {
@@ -202,6 +387,7 @@ export async function discoverRepositories(
         baseBranch: defaultBranch || 'main',
         remoteUrl,
         favorite: false,
+        ...(imageUrl ? { imageUrl } : {}),
         ...(provider ? { provider } : {}),
       }
       const repoWorktrees = await Promise.all(entries.map((entry) => buildWorktree(entry, repo.id)))

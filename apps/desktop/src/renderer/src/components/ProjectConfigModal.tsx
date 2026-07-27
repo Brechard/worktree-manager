@@ -1,5 +1,5 @@
-import { useEffect, useState, type MouseEvent } from 'react'
-import { AlertTriangle, KeyRound, Loader2, Sparkles, X } from 'lucide-react'
+import { useEffect, useRef, useState, type ChangeEvent, type MouseEvent } from 'react'
+import { AlertTriangle, Image as ImageIcon, KeyRound, Loader2, Sparkles, X } from 'lucide-react'
 import type { ProviderConfig, Repository } from '@worktree/contracts'
 import { api } from '../api'
 import { EDITOR_OPTIONS, editorLabel, shortenPath } from '../lib/paths'
@@ -29,6 +29,8 @@ export function ProjectConfigModal({ repository, onClose, onSave }: ProjectConfi
   const [detecting, setDetecting] = useState(false)
   const [tokenHint, setTokenHint] = useState<string | null>(null)
   const [autoNote, setAutoNote] = useState<string | null>(null)
+  const [imageUrl, setImageUrl] = useState(repository.imageUrl ?? '')
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   // Auto-fill from remote on open if missing
   useEffect(() => {
@@ -111,6 +113,14 @@ export function ProjectConfigModal({ repository, onClose, onSave }: ProjectConfi
     }
   }
 
+  const handleImageFile = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = () => setImageUrl(reader.result as string)
+    reader.readAsDataURL(file)
+  }
+
   // Consider the form "clean" if it still matches the saved repository (the
   // detected default branch is auto-adopted on open and doesn't count as a change).
   const initialBase = repository.baseBranch || defaultBranch || 'main'
@@ -122,7 +132,8 @@ export function ProjectConfigModal({ repository, onClose, onSave }: ProjectConfi
     (organization || '') !== (repository.provider?.organization || '') ||
     (project || '') !== (repository.provider?.project || '') ||
     (repoName || '') !== (repository.provider?.repository || '') ||
-    (token || '') !== (repository.provider?.personalAccessToken || '')
+    (token || '') !== (repository.provider?.personalAccessToken || '') ||
+    (imageUrl || '') !== (repository.imageUrl || '')
 
   const handleBackdropMouseDown = (e: MouseEvent) => {
     if (e.target === e.currentTarget && !isDirty) onClose()
@@ -131,13 +142,13 @@ export function ProjectConfigModal({ repository, onClose, onSave }: ProjectConfi
   const handleSave = () => {
     const provider: ProviderConfig | undefined = providerType
       ? {
-          type: providerType,
-          organization: organization || undefined,
-          project: project || undefined,
-          repository: repoName || repository.name,
-          personalAccessToken: token || undefined,
-          source: providerSource ?? 'manual',
-        }
+        type: providerType,
+        organization: organization || undefined,
+        project: project || undefined,
+        repository: repoName || repository.name,
+        personalAccessToken: token || undefined,
+        source: providerSource ?? 'manual',
+      }
       : undefined
 
     onSave({
@@ -145,6 +156,7 @@ export function ProjectConfigModal({ repository, onClose, onSave }: ProjectConfi
       baseBranch,
       favorite,
       preferredEditor: preferredEditor || undefined,
+      imageUrl: imageUrl || undefined,
       provider,
     })
   }
@@ -236,6 +248,60 @@ export function ProjectConfigModal({ repository, onClose, onSave }: ProjectConfi
               />
               Favorite (pin to top of project list)
             </label>
+
+            <div>
+              <label htmlFor="project-image-url" className="mb-1 block text-sm font-medium">Project image</label>
+              <div className="flex items-start gap-3">
+                {imageUrl ? (
+                  <img
+                    src={imageUrl}
+                    alt="Project logo"
+                    className="h-10 w-10 rounded-md border border-border object-contain bg-background"
+                  />
+                ) : (
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-background text-muted">
+                    <ImageIcon className="h-5 w-5" aria-hidden="true" />
+                  </div>
+                )}
+                <div className="min-w-0 flex-1 space-y-2">
+                  <input
+                    id="project-image-url"
+                    type="text"
+                    value={imageUrl}
+                    onChange={(e) => setImageUrl(e.target.value)}
+                    placeholder="https://example.com/logo.png or data URL"
+                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
+                  />
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    aria-label="Choose project image file"
+                    onChange={handleImageFile}
+                    className="hidden"
+                  />
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-2.5 py-1.5 text-xs font-medium hover:bg-accent"
+                    >
+                      Choose file
+                    </button>
+                    {imageUrl && (
+                      <button
+                        type="button"
+                        onClick={() => setImageUrl('')}
+                        className="text-xs text-muted hover:text-foreground"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+              <p className="mt-1 text-xs text-muted">Supports image URLs and local files.</p>
+            </div>
           </section>
 
           <section className="space-y-3">

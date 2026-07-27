@@ -1,7 +1,31 @@
 import { useMemo, useState, type ReactNode } from 'react'
 import { cn } from '../lib/utils'
 
+const toggleClass = (active: boolean) =>
+  cn(
+    'rounded-md px-2 py-0.5 text-[10px] font-medium transition-colors',
+    active
+      ? 'bg-primary text-primary-foreground shadow-sm'
+      : 'text-muted hover:text-foreground'
+  )
+
+const cellClass = (type: DiffLine['type']) =>
+  cn(
+    'min-h-[1.25rem] px-1 leading-4',
+    type === 'add' && 'bg-emerald-500/10 text-emerald-400',
+    type === 'del' && 'bg-rose-500/10 text-rose-400',
+    type === 'submodule' && 'bg-amber-500/10 text-amber-400',
+    type === 'hunk' && 'bg-primary/10 text-primary',
+    (type === 'meta' || type === 'context') && 'text-foreground/80'
+  )
+
+function submoduleText(line: DiffLine) {
+  const short = line.hash?.slice(0, 8) ?? ''
+  return line.side === 'old' ? `Old submodule commit: ${short}` : `New submodule commit: ${short}`
+}
+
 type DiffLine = {
+  id: number
   type: 'meta' | 'hunk' | 'context' | 'add' | 'del' | 'submodule'
   raw: string
   oldLine?: number | undefined
@@ -12,6 +36,7 @@ type DiffLine = {
 
 export function parseDiff(diff: string): DiffLine[] {
   const lines: DiffLine[] = []
+  let id = 0
   let oldLine = 0
   let newLine = 0
   let inHunk = false
@@ -30,7 +55,7 @@ export function parseDiff(diff: string): DiffLine[] {
       raw.startsWith('\\ No newline') ||
       raw.startsWith('Binary files')
     ) {
-      lines.push({ type: 'meta', raw })
+      lines.push({ id: id++, type: 'meta', raw })
       inHunk = false
       continue
     }
@@ -40,17 +65,17 @@ export function parseDiff(diff: string): DiffLine[] {
       oldLine = parseInt(hunkMatch[1] || '0', 10)
       newLine = parseInt(hunkMatch[3] || '0', 10)
       inHunk = true
-      lines.push({ type: 'hunk', raw })
+      lines.push({ id: id++, type: 'hunk', raw })
       continue
     }
 
     if (!inHunk) {
-      lines.push({ type: 'meta', raw })
+      lines.push({ id: id++, type: 'meta', raw })
       continue
     }
 
     if (raw.length === 0) {
-      lines.push({ type: 'meta', raw })
+      lines.push({ id: id++, type: 'meta', raw })
       continue
     }
 
@@ -62,25 +87,25 @@ export function parseDiff(diff: string): DiffLine[] {
       const n = side === 'new' ? newLine || undefined : undefined
       if (side === 'old' && oldLine) oldLine++
       if (side === 'new' && newLine) newLine++
-      lines.push({ type: 'submodule', raw, oldLine: o, newLine: n, hash: submoduleMatch[2], side })
+      lines.push({ id: id++, type: 'submodule', raw, oldLine: o, newLine: n, hash: submoduleMatch[2], side })
     } else if (prefix === ' ') {
       const o = oldLine || undefined
       const n = newLine || undefined
       if (oldLine) oldLine++
       if (newLine) newLine++
-      lines.push({ type: 'context', raw, oldLine: o, newLine: n })
+      lines.push({ id: id++, type: 'context', raw, oldLine: o, newLine: n })
     } else if (prefix === '-') {
       const o = oldLine || undefined
       if (oldLine) oldLine++
-      lines.push({ type: 'del', raw, oldLine: o })
+      lines.push({ id: id++, type: 'del', raw, oldLine: o })
     } else if (prefix === '+') {
       const n = newLine || undefined
       if (newLine) newLine++
-      lines.push({ type: 'add', raw, newLine: n })
+      lines.push({ id: id++, type: 'add', raw, newLine: n })
     } else if (raw.startsWith('\\')) {
-      lines.push({ type: 'meta', raw })
+      lines.push({ id: id++, type: 'meta', raw })
     } else {
-      lines.push({ type: 'meta', raw })
+      lines.push({ id: id++, type: 'meta', raw })
     }
   }
 
@@ -101,45 +126,23 @@ export function DiffViewer({
   const source = context === 'full' ? fullDiff : diff
   const lines = useMemo(() => parseDiff(source), [source])
 
-  const toggleClass = (active: boolean) =>
-    cn(
-      'rounded-md px-2 py-0.5 text-[10px] font-medium transition-colors',
-      active
-        ? 'bg-primary text-primary-foreground shadow-sm'
-        : 'text-muted hover:text-foreground'
-    )
-
-  const cellClass = (type: DiffLine['type']) =>
-    cn(
-      'min-h-[1.25rem] px-1 leading-4',
-      type === 'add' && 'bg-emerald-500/10 text-emerald-400',
-      type === 'del' && 'bg-rose-500/10 text-rose-400',
-      type === 'submodule' && 'bg-amber-500/10 text-amber-400',
-      type === 'hunk' && 'bg-primary/10 text-primary',
-      (type === 'meta' || type === 'context') && 'text-foreground/80'
-    )
-
-  const submoduleText = (line: DiffLine) => {
-    const short = line.hash?.slice(0, 8) ?? ''
-    return line.side === 'old' ? `Old submodule commit: ${short}` : `New submodule commit: ${short}`
-  }
 
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2">
         <div className="inline-flex items-center gap-0.5 rounded-lg bg-accent p-0.5">
-          <button onClick={() => setMode('unified')} className={toggleClass(mode === 'unified')}>
+          <button type="button" onClick={() => setMode('unified')} className={toggleClass(mode === 'unified')}>
             Unified
           </button>
-          <button onClick={() => setMode('split')} className={toggleClass(mode === 'split')}>
+          <button type="button" onClick={() => setMode('split')} className={toggleClass(mode === 'split')}>
             Side by side
           </button>
         </div>
         <div className="inline-flex items-center gap-0.5 rounded-lg bg-accent p-0.5">
-          <button onClick={() => setContext('diff')} className={toggleClass(context === 'diff')}>
+          <button type="button" onClick={() => setContext('diff')} className={toggleClass(context === 'diff')}>
             Diff only
           </button>
-          <button onClick={() => setContext('full')} className={toggleClass(context === 'full')}>
+          <button type="button" onClick={() => setContext('full')} className={toggleClass(context === 'full')}>
             Whole file
           </button>
         </div>
@@ -150,17 +153,17 @@ export function DiffViewer({
 
       {source.trim() ? (mode === 'unified' ? (
         <div className="grid max-h-96 grid-cols-[2rem_2rem_1fr] overflow-auto rounded-md border border-border bg-background font-mono text-[10px]">
-          {lines.map((line, i) => {
+          {lines.map((line) => {
             if (line.type === 'meta' || line.type === 'hunk') {
               return (
-                <div key={i} className={cn(cellClass(line.type), 'col-span-3 whitespace-pre')}>
+                <div key={line.id} className={cn(cellClass(line.type), 'col-span-3 whitespace-pre')}>
                   {line.raw}
                 </div>
               )
             }
             if (line.type === 'submodule') {
               return (
-                <div key={i} className={cn(cellClass(line.type), 'contents')}>
+                <div key={line.id} className={cn(cellClass(line.type), 'contents')}>
                   <div className="text-right text-muted/60 select-none pr-1">{line.oldLine ?? ''}</div>
                   <div className="text-right text-muted/60 select-none pr-1">{line.newLine ?? ''}</div>
                   <div className="overflow-hidden whitespace-pre px-1">
@@ -170,7 +173,7 @@ export function DiffViewer({
               )
             }
             return (
-              <div key={i} className={cn(cellClass(line.type), 'contents')}>
+              <div key={line.id} className={cn(cellClass(line.type), 'contents')}>
                 <div className="text-right text-muted/60 select-none pr-1">{line.oldLine ?? ''}</div>
                 <div className="text-right text-muted/60 select-none pr-1">{line.newLine ?? ''}</div>
                 <div className="overflow-hidden whitespace-pre px-1">
@@ -185,10 +188,10 @@ export function DiffViewer({
         </div>
       ) : (
         <div className="grid max-h-96 grid-cols-[2rem_1fr_2rem_1fr] overflow-auto rounded-md border border-border bg-background font-mono text-[10px]">
-          {lines.map((line, i) => {
+          {lines.map((line) => {
             if (line.type === 'meta' || line.type === 'hunk') {
               return (
-                <div key={i} className={cn(cellClass(line.type), 'col-span-4 whitespace-pre')}>
+                <div key={line.id} className={cn(cellClass(line.type), 'col-span-4 whitespace-pre')}>
                   {line.raw}
                 </div>
               )
@@ -196,7 +199,7 @@ export function DiffViewer({
             const content = line.raw.slice(1)
             if (line.type === 'submodule') {
               return (
-                <div key={i} className="contents">
+                <div key={line.id} className="contents">
                   <div className="text-right text-amber-400/60 select-none pr-1">{line.oldLine ?? ''}</div>
                   <div className="overflow-hidden whitespace-pre bg-amber-500/10 px-1 text-amber-400">
                     {line.side === 'old' ? submoduleText(line) : ''}
@@ -210,7 +213,7 @@ export function DiffViewer({
             }
             if (line.type === 'add') {
               return (
-                <div key={i} className="contents">
+                <div key={line.id} className="contents">
                   <div className="bg-rose-500/5" />
                   <div className="bg-rose-500/5" />
                   <div className="text-right text-emerald-400/60 select-none pr-1">{line.newLine ?? ''}</div>
@@ -222,7 +225,7 @@ export function DiffViewer({
             }
             if (line.type === 'del') {
               return (
-                <div key={i} className="contents">
+                <div key={line.id} className="contents">
                   <div className="text-right text-rose-400/60 select-none pr-1">{line.oldLine ?? ''}</div>
                   <div className="overflow-hidden whitespace-pre bg-rose-500/10 px-1 text-rose-400">
                     {content}
@@ -233,7 +236,7 @@ export function DiffViewer({
               )
             }
             return (
-              <div key={i} className="contents">
+              <div key={line.id} className="contents">
                 <div className="text-right text-muted/60 select-none pr-1">{line.oldLine ?? ''}</div>
                 <div className="overflow-hidden whitespace-pre px-1">{content}</div>
                 <div className="text-right text-muted/60 select-none pr-1">{line.newLine ?? ''}</div>

@@ -58,15 +58,18 @@ export function Onboarding() {
     if (!scanResult) return
     const existing = useAppStore.getState().repositories
     const existingByPath = new Map(existing.map((r) => [r.path, r]))
+    const existingById = new Map(existing.map((r) => [r.id, r]))
     const settings = useAppStore.getState().settings
 
     // Preserve favorites / preferred editor / tokens when re-scanning
-    const repos = scanResult.repositories
-      .filter((r) => selectedRepoIds.has(r.id))
-      .map((r) => {
-        const prev = existingByPath.get(r.path) || existing.find((e) => e.id === r.id)
-        if (!prev) return r
-        return {
+    const repos: typeof scanResult.repositories = []
+    for (const r of scanResult.repositories) {
+      if (!selectedRepoIds.has(r.id)) continue
+      const prev = existingByPath.get(r.path) || existingById.get(r.id)
+      if (!prev) {
+        repos.push(r)
+      } else {
+        repos.push({
           ...r,
           favorite: prev.favorite ?? r.favorite,
           preferredEditor: prev.preferredEditor ?? r.preferredEditor,
@@ -74,9 +77,13 @@ export function Onboarding() {
           provider: prev.provider?.personalAccessToken
             ? prev.provider
             : (r.provider ?? prev.provider),
-        }
-      })
-    const worktrees = scanResult.worktrees.filter((w) => repos.some((r) => r.id === w.repositoryId))
+        })
+      }
+    }
+    const worktrees: typeof scanResult.worktrees = []
+    for (const w of scanResult.worktrees) {
+      if (repos.some((r) => r.id === w.repositoryId)) worktrees.push(w)
+    }
 
     const nextSettings = {
       watchedDirectories: Array.from(new Set([...(settings?.watchedDirectories ?? []), ...roots])),
@@ -109,6 +116,7 @@ export function Onboarding() {
         trailing={
           repositories.length > 0 ? (
             <button
+              type="button"
               onClick={() => setView('dashboard')}
               className="rounded-md border border-border bg-background px-2.5 py-1.5 text-xs font-medium hover:bg-accent"
             >
@@ -129,6 +137,7 @@ export function Onboarding() {
             <div className="flex items-center gap-2">
               <h2 className="text-sm font-medium">Scan roots</h2>
               <button
+                type="button"
                 onClick={addRoot}
                 className="inline-flex items-center gap-1 rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:opacity-90"
               >
@@ -149,7 +158,9 @@ export function Onboarding() {
                     {shortenPath(root)}
                   </span>
                   <button
+                    type="button"
                     onClick={() => removeRoot(i)}
+                    aria-label="Remove root"
                     className="text-muted hover:text-destructive"
                   >
                     <X className="h-4 w-4" />
@@ -206,9 +217,11 @@ export function Onboarding() {
                       className="flex items-start gap-2 rounded-md border border-border p-2"
                     >
                       <input
+                        id={`repo-${repo.id}`}
                         type="checkbox"
                         checked={selectedRepoIds.has(repo.id)}
                         onChange={() => toggleRepo(repo.id)}
+                        aria-label={`Select ${repo.name}`}
                         className="mt-1 h-4 w-4"
                       />
                       <div className="min-w-0 flex-1 text-sm">
@@ -229,6 +242,7 @@ export function Onboarding() {
 
           <div className="flex items-center justify-end gap-3">
             <button
+              type="button"
               onClick={startScan}
               disabled={roots.length === 0 || scanning}
               className={cn(
@@ -253,6 +267,7 @@ export function Onboarding() {
 
             {scanResult && (
               <button
+                type="button"
                 onClick={importSelected}
                 disabled={selectedRepoIds.size === 0}
                 className="inline-flex items-center gap-2 rounded-md bg-success px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"

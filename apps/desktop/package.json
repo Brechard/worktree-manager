@@ -9,7 +9,8 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "dist": "electron-builder",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "doctor": "npx react-doctor@latest"
   },
   "dependencies": {
     "@worktree/contracts": "workspace:*",

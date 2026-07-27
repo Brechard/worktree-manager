@@ -27,45 +27,46 @@ import { GitActionsMenu, type MergeMode } from './GitActionsMenu'
 import { DiffViewer } from './DiffViewer'
 import { isSafeToDelete } from '../lib/worktreeSorting'
 
+type BusyKind =
+  | 'editor'
+  | 'terminal'
+  | 'folder'
+  | 'pull'
+  | 'rebase'
+  | 'push'
+  | 'commit'
+  | 'updateBase'
+  | 'checkout'
+  | 'merge'
+
 interface WorktreeRowProps {
   worktree: Worktree
   repository: Repository
   status?: WorktreeStatus | undefined
   /** A targeted re-sync of this row is in flight (git + PR lookup). */
-  refreshing?: boolean
+  refreshing?: boolean | undefined
   editorId: string
   onDelete: (worktree: Worktree) => void
-  onActionError?: (message: string) => void
-  onRefresh?: () => void
-  onRefreshWorktree?: (worktree: Worktree) => Promise<void> | void
-  onBranchChange?: (worktreeId: string, branch: string) => void
+  onActionError?: ((message: string) => void) | undefined
+  onRefresh?: (() => void) | undefined
+  onRefreshWorktree?: ((worktree: Worktree) => Promise<void> | void) | undefined
+  onBranchChange?: ((worktreeId: string, branch: string) => void) | undefined
 }
 
-export function WorktreeRow({
-  worktree,
-  repository,
-  status,
-  refreshing,
-  editorId,
-  onDelete,
-  onActionError,
-  onRefresh,
-  onRefreshWorktree,
-  onBranchChange,
-}: WorktreeRowProps) {
-  const [busy, setBusy] = useState<
-    | 'editor'
-    | 'terminal'
-    | 'folder'
-    | 'pull'
-    | 'rebase'
-    | 'push'
-    | 'commit'
-    | 'updateBase'
-    | 'checkout'
-    | 'merge'
-    | null
-  >(null)
+const gitActions = new Set([
+  'pull',
+  'rebase',
+  'push',
+  'commit',
+  'updateBase',
+  'checkout',
+  'merge',
+])
+
+export function WorktreeRow(props: WorktreeRowProps) {
+  const { worktree, repository, status, refreshing, editorId, onDelete, onActionError, onRefresh, onRefreshWorktree, onBranchChange } = props
+
+  const [busy, setBusy] = useState<BusyKind | null>(null)
   const [expanded, setExpanded] = useState(false)
   const [details, setDetails] = useState<WorktreeDetails | null>(null)
   const [loadingDetails, setLoadingDetails] = useState(false)
@@ -98,40 +99,15 @@ export function WorktreeRow({
     }
   }, [expanded, worktree, repository, details, onActionError])
 
-  const gitActions = new Set([
-    'pull',
-    'rebase',
-    'push',
-    'commit',
-    'updateBase',
-    'checkout',
-    'merge',
-  ])
   const run = async (
-    kind:
-      | 'editor'
-      | 'terminal'
-      | 'folder'
-      | 'pull'
-      | 'rebase'
-      | 'push'
-      | 'commit'
-      | 'updateBase'
-      | 'checkout'
-      | 'merge',
+    kind: BusyKind,
     fn: () => Promise<{ success?: boolean; error?: string; output?: string } | string | void>
   ) => {
     setBusy(kind)
-    // `updateBase` can change other worktrees' base-relative status (behind /
-    // merged), so it needs the full re-sync. Every other git action only
-    // affects this worktree — refresh just this row (falling back to the full
-    // refresh if a targeted one isn't wired).
     const refresh = () => {
       if (kind === 'updateBase' || !onRefreshWorktree) return onRefresh?.()
       return onRefreshWorktree(worktree)
     }
-    // Reconcile this row's status even on failure so an optimistic update (e.g. a
-    // checkout that turned out to conflict) doesn't leave a stale label behind.
     const reconcile = () => {
       if (kind !== 'updateBase') void onRefreshWorktree?.(worktree)
     }
@@ -187,9 +163,6 @@ export function WorktreeRow({
 
   const handleLoadBranches = () => window.api.getRepoBranches(worktree.path).then((r) => r.branches)
   const handleCheckout = (branch: string) => {
-    // Swap the branch label immediately (and clear the outgoing branch's PR);
-    // the targeted refresh in run() then corrects the rest (head commit,
-    // ahead/behind, merged) a moment later.
     onBranchChange?.(worktree.id, branch)
     run('checkout', () => window.api.checkoutBranch({ path: worktree.path, branch }))
   }
@@ -264,34 +237,16 @@ export function WorktreeRow({
     }
   }
 
-  // Prefer live git state from the latest status refresh over the branch/head
-  // captured at the last full scan — those go stale (e.g. a worktree scanned
-  // while detached, then moved onto a branch, would otherwise read "detached").
   const liveBranch = status?.branch ?? worktree.branch
   const detached = status?.detached ?? liveBranch === 'HEAD'
   const headCommit = status?.headCommit ?? worktree.headCommit
-
-  // The working-tree folder is gone; git still holds a prunable record for it.
-  // Every git/editor/terminal action would fail on the missing path, so we hide
-  // them and offer a single "prune" action instead.
   const prunable = worktree.prunable === true
-
   const safe = !status || worktree.isMain || worktree.prunable || isSafeToDelete(worktree, status)
-
-  // A PR merged into a long-lived branch (a release branch, say) is genuinely
-  // merged — just not into this repo's configured base, which is what the
-  // git-side "unmerged" label below measures. Naming the target keeps the two
-  // labels from reading as a contradiction.
   const prTargetBranch = status?.pullRequest?.targetBranch
   const mergedIntoOtherBranch =
     status?.pullRequest?.state === 'merged' &&
     prTargetBranch !== undefined &&
     prTargetBranch !== status.baseBranch
-
-  // The base branch is never the head of a PR into itself, and a detached HEAD
-  // has no branch to look one up by — so those rows have no PR slot at all,
-  // not even a pending one. Checking out a feature branch flips this back on
-  // and the badge fills in as soon as the re-sync lands.
   const prPending =
     refreshing === true &&
     repository.provider !== undefined &&
@@ -300,332 +255,54 @@ export function WorktreeRow({
 
   return (
     <div className="border-b border-border last:border-b-0 hover:bg-row-hover">
-      <div className="flex items-center justify-between gap-3 px-4 py-3">
-        <div
-          onClick={() => !prunable && setExpanded((v) => !v)}
-          onKeyDown={(event) => {
-            if (prunable || (event.key !== 'Enter' && event.key !== ' ')) return
-            event.preventDefault()
-            setExpanded((value) => !value)
-          }}
-          role={prunable ? undefined : 'button'}
-          tabIndex={prunable ? undefined : 0}
-          aria-expanded={!prunable ? expanded : undefined}
-          className={cn(
-            'min-w-0 flex-1 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary',
-            prunable ? 'cursor-default' : 'cursor-pointer'
-          )}
-          title={prunable ? undefined : 'Click for details'}
-        >
-          <div className="mb-1 flex flex-wrap items-center gap-1.5">
-            <span className="inline-flex items-center gap-1 rounded-md bg-accent px-2 py-0.5 text-xs font-medium text-foreground">
-              {!prunable &&
-                (expanded ? (
-                  <ChevronDown className="h-3 w-3 text-primary" />
-                ) : (
-                  <ChevronRight className="h-3 w-3 text-primary" />
-                ))}
-              <GitBranch className="h-3 w-3 text-primary" />
-              {detached ? (
-                <>
-                  detached HEAD
-                  {headCommit && <span className="text-muted">@{headCommit}</span>}
-                </>
-              ) : (
-                liveBranch
-              )}
-            </span>
-            {worktree.isMain && (
-              <span className="rounded-md bg-highlight/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-highlight">
-                Primary
-              </span>
-            )}
-            {prunable && (
-              <span
-                className="inline-flex items-center gap-1 rounded-md bg-warning/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-warning"
-                title={worktree.prunableReason || 'Working tree directory is missing'}
-              >
-                <AlertTriangle className="h-3 w-3" />
-                Stale · folder missing
-              </span>
-            )}
-            {status?.pullRequest ? (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation()
-                  handlePr()
-                }}
-                className={cn(
-                  'inline-flex max-w-[220px] items-center gap-1 truncate rounded-md px-2 py-0.5 text-xs font-medium',
-                  status.pullRequest.state === 'open' && 'bg-success/15 text-success',
-                  status.pullRequest.state === 'draft' && 'bg-muted/20 text-muted',
-                  status.pullRequest.state === 'closed' && 'bg-muted/20 text-muted',
-                  status.pullRequest.state === 'merged' && 'bg-merged/15 text-merged'
-                )}
-                title={
-                  mergedIntoOtherBranch
-                    ? `${status.pullRequest.title}\n\nMerged into ${prTargetBranch}, not into the configured base ${status.baseBranch}.`
-                    : status.pullRequest.title
-                }
-              >
-                {prPending ? (
-                  <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
-                ) : (
-                  <ExternalLink className="h-3 w-3 shrink-0" />
-                )}
-                <span className="truncate">
-                  {mergedIntoOtherBranch
-                    ? `merged into ${prTargetBranch}`
-                    : status.pullRequest.state === 'merged'
-                      ? 'merged'
-                      : status.pullRequest.state}{' '}
-                  · {status.pullRequest.title}
-                </span>
-              </button>
-            ) : (
-              prPending && (
-                <span
-                  className="inline-flex items-center gap-1 rounded-md bg-accent px-2 py-0.5 text-xs font-medium text-muted"
-                  title={`Looking up the pull request for ${liveBranch}…`}
-                >
-                  <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
-                  pull request
-                </span>
-              )
-            )}
-            {!safe && !worktree.isMain && !prunable && (
-              <span className="rounded-md bg-destructive/15 px-2 py-0.5 text-[10px] font-medium text-destructive">
-                not safe to delete
-              </span>
-            )}
-          </div>
-
-          <p className="truncate font-mono text-[12px] text-muted" title={worktree.path}>
-            {shortenPath(worktree.path)}
-          </p>
-
-          <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted">
-            {headCommit && (
-              <span className="inline-flex items-center gap-1">
-                <GitCommit className="h-3 w-3" />
-                {headCommit}
-              </span>
-            )}
-            {worktree.lastModified !== undefined && (
-              <span
-                className="inline-flex items-center gap-1"
-                title={`Last activity: ${new Date(worktree.lastModified).toLocaleString()}`}
-              >
-                <Clock className="h-3 w-3" />
-                {new Date(worktree.lastModified).toLocaleDateString()}
-              </span>
-            )}
-            {prunable && (
-              <span className="inline-flex items-center gap-1 text-warning">
-                <AlertTriangle className="h-3 w-3" />
-                {worktree.prunableReason || 'Working tree directory is missing'}
-              </span>
-            )}
-            {status && !prunable && (
-              <>
-                {status.dirty && <span className="text-warning">dirty</span>}
-                {status.staged && <span className="text-warning">staged</span>}
-                {(status.ahead > 0 || status.unpushed > 0) && (
-                  <span className="text-warning">
-                    {status.ahead > 0 ? `${status.ahead} ahead` : `${status.unpushed} unpushed`}
-                  </span>
-                )}
-                {status.behind > 0 && <span>{status.behind} behind</span>}
-                {detached ? (
-                  <span className="text-muted">detached</span>
-                ) : !status.mergedIntoBase && liveBranch !== status.baseBranch ? (
-                  // A stale ref can only produce a false "unmerged" — being an
-                  // ancestor of an older base still holds for the newer one — so
-                  // only the negative verdict has to be downgraded to "unknown".
-                  status.baseFetchError ? (
-                    <span
-                      className="text-warning"
-                      title={`Could not fetch origin/${status.baseBranch}, so the merge check ran against a possibly-stale ref.\n\n${status.baseFetchError}`}
-                    >
-                      merge unknown
-                    </span>
-                  ) : (
-                    <span
-                      className="text-warning"
-                      title={
-                        mergedIntoOtherBranch
-                          ? `Merged into ${prTargetBranch}, but not into the configured base ${status.baseBranch}.`
-                          : `Not merged into ${status.baseBranch}`
-                      }
-                    >
-                      unmerged
-                    </span>
-                  )
-                ) : (
-                  status.mergedIntoBase &&
-                  !worktree.isMain && <span className="font-medium text-merged">merged</span>
-                )}
-              </>
-            )}
-          </div>
-        </div>
-
-        <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
-          {prunable ? (
-            <button
-              type="button"
-              onClick={() => onDelete(worktree)}
-              title="Remove this stale worktree entry from git"
-              className="inline-flex items-center gap-1.5 rounded-md border border-warning/30 bg-warning/10 px-2.5 py-1.5 text-xs font-medium text-warning transition-colors hover:bg-warning/20"
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-              Prune
-            </button>
-          ) : (
-            <>
-              {busy && gitActions.has(busy) && (
-                <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-muted">
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                  {gitBusyLabel(busy, repository.baseBranch)}
-                </span>
-              )}
-              <GitActionsMenu
-                busy={busy}
-                branch={liveBranch}
-                baseBranch={repository.baseBranch}
-                showCommitInput={showCommitInput}
-                loadBranches={handleLoadBranches}
-                onPull={handlePull}
-                onRebase={handleRebase}
-                onPush={handlePush}
-                onCommit={() => {
-                  setExpanded(true)
-                  setShowCommitInput(true)
-                }}
-                onUpdateBaseBranch={handleUpdateBaseBranch}
-                onCheckout={handleCheckout}
-                onMerge={handleMerge}
-              />
-              <IconButton
-                title={`Open in ${editorLabel(editorId)}`}
-                onClick={handleOpen}
-                busy={busy === 'editor'}
-              >
-                <Code2 className="h-4 w-4" />
-              </IconButton>
-              <IconButton
-                title="Open in terminal"
-                onClick={handleTerminal}
-                busy={busy === 'terminal'}
-              >
-                <Terminal className="h-4 w-4" />
-              </IconButton>
-              <IconButton title="Reveal in Finder" onClick={handleFolder} busy={busy === 'folder'}>
-                <FolderOpen className="h-4 w-4" />
-              </IconButton>
-              {!worktree.isMain && (
-                <IconButton title="Move to Trash" onClick={() => onDelete(worktree)} danger>
-                  <Trash2 className="h-4 w-4" />
-                </IconButton>
-              )}
-            </>
-          )}
-        </div>
-      </div>
-
+      <WorktreeRowHeader
+        worktree={worktree}
+        status={status}
+        repository={repository}
+        busy={busy}
+        liveBranch={liveBranch}
+        detached={detached}
+        headCommit={headCommit}
+        prunable={prunable}
+        safe={safe}
+        prTargetBranch={prTargetBranch}
+        mergedIntoOtherBranch={mergedIntoOtherBranch}
+        prPending={prPending}
+        expanded={expanded}
+        setExpanded={setExpanded}
+        editorId={editorId}
+        showCommitInput={showCommitInput}
+        setShowCommitInput={setShowCommitInput}
+        onDelete={onDelete}
+        handleOpen={handleOpen}
+        handleTerminal={handleTerminal}
+        handleFolder={handleFolder}
+        handlePr={handlePr}
+        handlePull={handlePull}
+        handleRebase={handleRebase}
+        handlePush={handlePush}
+        handleUpdateBaseBranch={handleUpdateBaseBranch}
+        handleCheckout={handleCheckout}
+        handleMerge={handleMerge}
+        handleLoadBranches={handleLoadBranches}
+      />
       {expanded && (
-        <div className="border-t border-border bg-background/50 px-4 pb-4 pt-3">
-          {loadingDetails ? (
-            <div className="flex items-center gap-2 text-xs text-muted">
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              Loading details…
-            </div>
-          ) : details ? (
-            <div className="space-y-4">
-              {showCommitInput && (
-                <div className="flex items-start gap-2">
-                  <input
-                    type="text"
-                    value={commitMessage}
-                    onChange={(e) => setCommitMessage(e.target.value)}
-                    placeholder="Commit message"
-                    className="flex-1 rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground placeholder:text-muted focus:border-primary focus:outline-none"
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && !e.shiftKey) {
-                        e.preventDefault()
-                        handleCommit(false)
-                      }
-                      if (e.key === 'Escape') setShowCommitInput(false)
-                    }}
-                  />
-                  <button
-                    onClick={() => handleCommit(false)}
-                    disabled={!commitMessage.trim()}
-                    className="rounded-md bg-primary px-2 py-1 text-xs font-medium text-primary-foreground disabled:opacity-50"
-                  >
-                    Commit
-                  </button>
-                  <button
-                    onClick={() => handleCommit(true)}
-                    disabled={!commitMessage.trim() || details.dirtyFiles.length === 0}
-                    className="rounded-md bg-muted px-2 py-1 text-xs font-medium text-muted-foreground disabled:opacity-50"
-                  >
-                    Commit all
-                  </button>
-                </div>
-              )}
-              <FileList
-                title="Modified"
-                icon={<FileX className="h-3.5 w-3.5" />}
-                files={details.dirtyFiles}
-                color="text-warning"
-                onFileClick={handleFileClick}
-                onDiscard={handleDiscardFile}
-                discarding={busy === 'commit'}
-                selectedFile={selectedFile}
-                loadingDiff={loadingDiff}
-              />
-              <FileList
-                title="Staged"
-                icon={<FilePlus className="h-3.5 w-3.5" />}
-                files={details.stagedFiles}
-                color="text-success"
-                onFileClick={handleFileClick}
-                onDiscard={handleDiscardFile}
-                discarding={busy === 'commit'}
-                selectedFile={selectedFile}
-                loadingDiff={loadingDiff}
-              />
-              <FileList
-                title="Untracked"
-                icon={<FileClock className="h-3.5 w-3.5" />}
-                files={details.untrackedFiles}
-                color="text-muted"
-                onFileClick={handleFileClick}
-                onDiscard={handleDiscardFile}
-                discarding={busy === 'commit'}
-                selectedFile={selectedFile}
-                loadingDiff={loadingDiff}
-              />
-              <CommitList title="Unpushed commits" commits={details.unpushedCommits} />
-              {details.behindCommits.length > 0 && (
-                <CommitList
-                  title={`Behind ${details.baseBranch}`}
-                  commits={details.behindCommits}
-                />
-              )}
-              {details.dirtyFiles.length === 0 &&
-                details.stagedFiles.length === 0 &&
-                details.untrackedFiles.length === 0 &&
-                details.unpushedCommits.length === 0 &&
-                details.behindCommits.length === 0 && (
-                  <p className="text-xs text-muted">Nothing to show for this worktree.</p>
-                )}
-            </div>
-          ) : (
-            <p className="text-xs text-muted">Could not load details.</p>
-          )}
-        </div>
+        <WorktreeRowDetails
+          worktree={worktree}
+          repository={repository}
+          details={details}
+          loadingDetails={loadingDetails}
+          commitMessage={commitMessage}
+          setCommitMessage={setCommitMessage}
+          showCommitInput={showCommitInput}
+          setShowCommitInput={setShowCommitInput}
+          handleCommit={handleCommit}
+          handleFileClick={handleFileClick}
+          handleDiscardFile={handleDiscardFile}
+          selectedFile={selectedFile}
+          loadingDiff={loadingDiff}
+          discarding={busy === 'commit'}
+        />
       )}
     </div>
   )
@@ -650,6 +327,439 @@ function gitBusyLabel(kind: string, baseBranch: string): string {
     default:
       return 'Working'
   }
+}
+
+interface WorktreeRowHeaderProps {
+  worktree: Worktree
+  status?: WorktreeStatus | undefined
+  repository: Repository
+  busy: BusyKind | null
+  liveBranch: string
+  detached: boolean
+  headCommit: string | undefined
+  prunable: boolean
+  safe: boolean
+  prTargetBranch: string | undefined
+  mergedIntoOtherBranch: boolean
+  prPending: boolean
+  expanded: boolean
+  setExpanded: (v: React.SetStateAction<boolean>) => void
+  editorId: string
+  showCommitInput: boolean
+  setShowCommitInput: (v: React.SetStateAction<boolean>) => void
+  onDelete: (worktree: Worktree) => void
+  handleOpen: () => void
+  handleTerminal: () => void
+  handleFolder: () => void
+  handlePr: () => Promise<void>
+  handlePull: () => void
+  handleRebase: () => void
+  handlePush: () => void
+  handleUpdateBaseBranch: () => void
+  handleCheckout: (branch: string) => void
+  handleMerge: (branch: string, mode: MergeMode) => void
+  handleLoadBranches: () => Promise<string[]>
+}
+
+function WorktreeRowHeader({
+  worktree,
+  status,
+  repository,
+  busy,
+  liveBranch,
+  detached,
+  headCommit,
+  prunable,
+  safe,
+  prTargetBranch,
+  mergedIntoOtherBranch,
+  prPending,
+  expanded,
+  setExpanded,
+  editorId,
+  showCommitInput,
+  setShowCommitInput,
+  onDelete,
+  handleOpen,
+  handleTerminal,
+  handleFolder,
+  handlePr,
+  handlePull,
+  handleRebase,
+  handlePush,
+  handleUpdateBaseBranch,
+  handleCheckout,
+  handleMerge,
+  handleLoadBranches,
+}: WorktreeRowHeaderProps) {
+  return (
+    <div className="flex items-center justify-between gap-3 px-4 py-3">
+      <div
+        onClick={() => !prunable && setExpanded((v) => !v)}
+        onKeyDown={(event) => {
+          if (prunable || (event.key !== 'Enter' && event.key !== ' ')) return
+          event.preventDefault()
+          setExpanded((value) => !value)
+        }}
+        role={prunable ? undefined : 'button'}
+        tabIndex={prunable ? undefined : 0}
+        aria-expanded={!prunable ? expanded : undefined}
+        className={cn(
+          'min-w-0 flex-1 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary',
+          prunable ? 'cursor-default' : 'cursor-pointer'
+        )}
+        title={prunable ? undefined : 'Click for details'}
+      >
+        <div className="mb-1 flex flex-wrap items-center gap-1.5">
+          <span className="inline-flex items-center gap-1 rounded-md bg-accent px-2 py-0.5 text-xs font-medium text-foreground">
+            {!prunable &&
+              (expanded ? (
+                <ChevronDown className="h-3 w-3 text-primary" />
+              ) : (
+                <ChevronRight className="h-3 w-3 text-primary" />
+              ))}
+            <GitBranch className="h-3 w-3 text-primary" />
+            {detached ? (
+              <>
+                detached HEAD
+                {headCommit && <span className="text-muted">@{headCommit}</span>}
+              </>
+            ) : (
+              liveBranch
+            )}
+          </span>
+          {worktree.isMain && (
+            <span className="rounded-md bg-highlight/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-highlight">
+              Primary
+            </span>
+          )}
+          {prunable && (
+            <span
+              className="inline-flex items-center gap-1 rounded-md bg-warning/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-warning"
+              title={worktree.prunableReason || 'Working tree directory is missing'}
+            >
+              <AlertTriangle className="h-3 w-3" />
+              Stale · folder missing
+            </span>
+          )}
+          {status?.pullRequest ? (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                void handlePr()
+              }}
+              className={cn(
+                'inline-flex max-w-[220px] items-center gap-1 truncate rounded-md px-2 py-0.5 text-xs font-medium',
+                status.pullRequest.state === 'open' && 'bg-success/15 text-success',
+                status.pullRequest.state === 'draft' && 'bg-muted/20 text-muted',
+                status.pullRequest.state === 'closed' && 'bg-muted/20 text-muted',
+                status.pullRequest.state === 'merged' && 'bg-merged/15 text-merged'
+              )}
+              title={
+                mergedIntoOtherBranch
+                  ? `${status.pullRequest.title}\n\nMerged into ${prTargetBranch}, not into the configured base ${status.baseBranch}.`
+                  : status.pullRequest.title
+              }
+            >
+              {prPending ? (
+                <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+              ) : (
+                <ExternalLink className="h-3 w-3 shrink-0" />
+              )}
+              <span className="truncate">
+                {mergedIntoOtherBranch
+                  ? `merged into ${prTargetBranch}`
+                  : status.pullRequest.state === 'merged'
+                    ? 'merged'
+                    : status.pullRequest.state}{' '}
+                · {status.pullRequest.title}
+              </span>
+            </button>
+          ) : (
+            prPending && (
+              <span
+                className="inline-flex items-center gap-1 rounded-md bg-accent px-2 py-0.5 text-xs font-medium text-muted"
+                title={`Looking up the pull request for ${liveBranch}…`}
+              >
+                <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+                pull request
+              </span>
+            )
+          )}
+          {!safe && !worktree.isMain && !prunable && (
+            <span className="rounded-md bg-destructive/15 px-2 py-0.5 text-[10px] font-medium text-destructive">
+              not safe to delete
+            </span>
+          )}
+        </div>
+
+        <p className="truncate font-mono text-[12px] text-muted" title={worktree.path}>
+          {shortenPath(worktree.path)}
+        </p>
+
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted">
+          {headCommit && (
+            <span className="inline-flex items-center gap-1">
+              <GitCommit className="h-3 w-3" />
+              {headCommit}
+            </span>
+          )}
+          {worktree.lastModified !== undefined && (
+            <span
+              className="inline-flex items-center gap-1"
+              title={`Last activity: ${new Date(worktree.lastModified).toLocaleString()}`}
+            >
+              <Clock className="h-3 w-3" />
+              {new Date(worktree.lastModified).toLocaleDateString()}
+            </span>
+          )}
+          {prunable && (
+            <span className="inline-flex items-center gap-1 text-warning">
+              <AlertTriangle className="h-3 w-3" />
+              {worktree.prunableReason || 'Working tree directory is missing'}
+            </span>
+          )}
+          {status && !prunable && (
+            <>
+              {status.dirty && <span className="text-warning">dirty</span>}
+              {status.staged && <span className="text-warning">staged</span>}
+              {(status.ahead > 0 || status.unpushed > 0) && (
+                <span className="text-warning">
+                  {status.ahead > 0 ? `${status.ahead} ahead` : `${status.unpushed} unpushed`}
+                </span>
+              )}
+              {status.behind > 0 && <span>{status.behind} behind</span>}
+              {detached ? (
+                <span className="text-muted">detached</span>
+              ) : !status.mergedIntoBase && liveBranch !== status.baseBranch ? (
+                status.baseFetchError ? (
+                  <span
+                    className="text-warning"
+                    title={`Could not fetch origin/${status.baseBranch}, so the merge check ran against a possibly-stale ref.\n\n${status.baseFetchError}`}
+                  >
+                    merge unknown
+                  </span>
+                ) : (
+                  <span
+                    className="text-warning"
+                    title={
+                      mergedIntoOtherBranch
+                        ? `Merged into ${prTargetBranch}, but not into the configured base ${status.baseBranch}.`
+                        : `Not merged into ${status.baseBranch}`
+                    }
+                  >
+                    unmerged
+                  </span>
+                )
+              ) : (
+                status.mergedIntoBase &&
+                !worktree.isMain && <span className="font-medium text-merged">merged</span>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+
+      <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
+        {prunable ? (
+          <button
+            type="button"
+            onClick={() => onDelete(worktree)}
+            title="Remove this stale worktree entry from git"
+            className="inline-flex items-center gap-1.5 rounded-md border border-warning/30 bg-warning/10 px-2.5 py-1.5 text-xs font-medium text-warning transition-colors hover:bg-warning/20"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            Prune
+          </button>
+        ) : (
+          <>
+            {busy && gitActions.has(busy) && (
+              <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-muted">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                {gitBusyLabel(busy, repository.baseBranch)}
+              </span>
+            )}
+            <GitActionsMenu
+              busy={busy}
+              branch={liveBranch}
+              baseBranch={repository.baseBranch}
+              showCommitInput={showCommitInput}
+              loadBranches={handleLoadBranches}
+              onPull={handlePull}
+              onRebase={handleRebase}
+              onPush={handlePush}
+              onCommit={() => {
+                setExpanded(true)
+                setShowCommitInput(true)
+              }}
+              onUpdateBaseBranch={handleUpdateBaseBranch}
+              onCheckout={handleCheckout}
+              onMerge={handleMerge}
+            />
+            <IconButton
+              title={`Open in ${editorLabel(editorId)}`}
+              onClick={handleOpen}
+              busy={busy === 'editor'}
+            >
+              <Code2 className="h-4 w-4" />
+            </IconButton>
+            <IconButton
+              title="Open in terminal"
+              onClick={handleTerminal}
+              busy={busy === 'terminal'}
+            >
+              <Terminal className="h-4 w-4" />
+            </IconButton>
+            <IconButton title="Reveal in Finder" onClick={handleFolder} busy={busy === 'folder'}>
+              <FolderOpen className="h-4 w-4" />
+            </IconButton>
+            {!worktree.isMain && (
+              <IconButton title="Move to Trash" onClick={() => onDelete(worktree)} danger>
+                <Trash2 className="h-4 w-4" />
+              </IconButton>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+interface WorktreeRowDetailsProps {
+  worktree: Worktree
+  repository: Repository
+  details: WorktreeDetails | null
+  loadingDetails: boolean
+  commitMessage: string
+  setCommitMessage: (v: string) => void
+  showCommitInput: boolean
+  setShowCommitInput: (v: React.SetStateAction<boolean>) => void
+  handleCommit: (all?: boolean) => void
+  handleFileClick: (file: { path: string; status: string }) => void | Promise<void>
+  handleDiscardFile: (file: { path: string; status: string }) => void | Promise<void>
+  selectedFile: {
+    path: string
+    staged: boolean
+    untracked: boolean
+    diff: string
+    fullDiff: string
+  } | null
+  loadingDiff: boolean
+  discarding: boolean
+}
+
+function WorktreeRowDetails({
+  details,
+  loadingDetails,
+  commitMessage,
+  setCommitMessage,
+  showCommitInput,
+  setShowCommitInput,
+  handleCommit,
+  handleFileClick,
+  handleDiscardFile,
+  selectedFile,
+  loadingDiff,
+  discarding,
+}: WorktreeRowDetailsProps) {
+  return (
+    <div className="border-t border-border bg-background/50 px-4 pb-4 pt-3">
+      {loadingDetails ? (
+        <div className="flex items-center gap-2 text-xs text-muted">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          Loading details…
+        </div>
+      ) : details ? (
+        <div className="space-y-4">
+          {showCommitInput && (
+            <div className="flex items-start gap-2">
+              <input
+                type="text"
+                value={commitMessage}
+                onChange={(e) => setCommitMessage(e.target.value)}
+                placeholder="Commit message"
+                aria-label="Commit message"
+                className="flex-1 rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground placeholder:text-muted focus:border-primary focus:outline-none"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault()
+                    handleCommit(false)
+                  }
+                  if (e.key === 'Escape') setShowCommitInput(false)
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => handleCommit(false)}
+                disabled={!commitMessage.trim()}
+                className="rounded-md bg-primary px-2 py-1 text-xs font-medium text-primary-foreground disabled:opacity-50"
+              >
+                Commit
+              </button>
+              <button
+                type="button"
+                onClick={() => handleCommit(true)}
+                disabled={!commitMessage.trim() || details.dirtyFiles.length === 0}
+                className="rounded-md bg-muted px-2 py-1 text-xs font-medium text-muted-foreground disabled:opacity-50"
+              >
+                Commit all
+              </button>
+            </div>
+          )}
+          <FileList
+            title="Modified"
+            icon={<FileX className="h-3.5 w-3.5" />}
+            files={details.dirtyFiles}
+            color="text-warning"
+            onFileClick={handleFileClick}
+            onDiscard={handleDiscardFile}
+            discarding={discarding}
+            selectedFile={selectedFile}
+            loadingDiff={loadingDiff}
+          />
+          <FileList
+            title="Staged"
+            icon={<FilePlus className="h-3.5 w-3.5" />}
+            files={details.stagedFiles}
+            color="text-success"
+            onFileClick={handleFileClick}
+            onDiscard={handleDiscardFile}
+            discarding={discarding}
+            selectedFile={selectedFile}
+            loadingDiff={loadingDiff}
+          />
+          <FileList
+            title="Untracked"
+            icon={<FileClock className="h-3.5 w-3.5" />}
+            files={details.untrackedFiles}
+            color="text-muted"
+            onFileClick={handleFileClick}
+            onDiscard={handleDiscardFile}
+            discarding={discarding}
+            selectedFile={selectedFile}
+            loadingDiff={loadingDiff}
+          />
+          <CommitList title="Unpushed commits" commits={details.unpushedCommits} />
+          {details.behindCommits.length > 0 && (
+            <CommitList
+              title={`Behind ${details.baseBranch}`}
+              commits={details.behindCommits}
+            />
+          )}
+          {details.dirtyFiles.length === 0 &&
+            details.stagedFiles.length === 0 &&
+            details.untrackedFiles.length === 0 &&
+            details.unpushedCommits.length === 0 &&
+            details.behindCommits.length === 0 && (
+              <p className="text-xs text-muted">Nothing to show for this worktree.</p>
+            )}
+        </div>
+      ) : (
+        <p className="text-xs text-muted">Could not load details.</p>
+      )}
+    </div>
+  )
 }
 
 function FileList({
@@ -680,9 +790,6 @@ function FileList({
   loadingDiff?: boolean | undefined
 }) {
   const [confirmDiscard, setConfirmDiscard] = useState(false)
-  useEffect(() => {
-    setConfirmDiscard(false)
-  }, [selectedFile?.path])
   if (files.length === 0) return null
   const untracked = title === 'Untracked'
   return (
@@ -696,7 +803,11 @@ function FileList({
           <li key={f.path}>
             <div className="group flex items-center gap-1">
               <button
-                onClick={() => onFileClick?.(f)}
+                type="button"
+                onClick={() => {
+                  setConfirmDiscard(false)
+                  onFileClick?.(f)
+                }}
                 title={`${f.status} ${f.path}`}
                 className={cn(
                   'flex flex-1 items-center gap-2 truncate rounded px-1.5 py-0.5 font-mono text-[11px] text-left',
@@ -709,7 +820,11 @@ function FileList({
                 <span className="truncate">{f.path}</span>
               </button>
               <button
-                onClick={() => onFileClick?.(f)}
+                type="button"
+                onClick={() => {
+                  setConfirmDiscard(false)
+                  onFileClick?.(f)
+                }}
                 title="View diff"
                 className={cn(
                   'shrink-0 rounded p-1 text-muted opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100',
@@ -738,6 +853,7 @@ function FileList({
                               {untracked ? 'Delete this new file?' : 'Discard all changes?'}
                             </span>
                             <button
+                              type="button"
                               onClick={() => {
                                 setConfirmDiscard(false)
                                 void onDiscard(f)
@@ -753,6 +869,7 @@ function FileList({
                               {untracked ? 'Delete' : 'Discard'}
                             </button>
                             <button
+                              type="button"
                               onClick={() => setConfirmDiscard(false)}
                               className="rounded-md px-2 py-0.5 text-[11px] text-muted hover:text-foreground"
                             >
@@ -761,6 +878,7 @@ function FileList({
                           </>
                         ) : (
                           <button
+                            type="button"
                             onClick={() => setConfirmDiscard(true)}
                             title={
                               untracked ? 'Delete this new file' : 'Discard changes to this file'
@@ -828,6 +946,7 @@ function IconButton({
 }) {
   return (
     <button
+      type="button"
       onClick={onClick}
       title={title}
       disabled={busy}

@@ -76,14 +76,25 @@ const AI_AGENT_DIRS = ['.t3', '.claude', '.codex', '.devin', '.aider', '.windsur
 
 function getAiAgentRoots(): string[] {
   const home = homedir()
-  return AI_AGENT_DIRS.map((d) => join(home, d)).filter(existsSync)
+  const roots: string[] = []
+  for (const d of AI_AGENT_DIRS) {
+    const p = join(home, d)
+    if (existsSync(p)) roots.push(p)
+  }
+  return roots
 }
 
 /** Drop roots that live inside another root so we don't scan the same tree twice. */
 function dedupeRoots(roots: string[]): string[] {
-  const cleaned = Array.from(
-    new Set(roots.map((r) => r.replace(/\/+$/, '')).filter((r) => r.length > 0))
-  ).sort((a, b) => a.length - b.length)
+  const seen = new Set<string>()
+  const cleaned: string[] = []
+  for (const r of roots) {
+    const normalized = r.replace(/\/+$/, '')
+    if (normalized.length === 0 || seen.has(normalized)) continue
+    seen.add(normalized)
+    cleaned.push(normalized)
+  }
+  cleaned.sort((a, b) => a.length - b.length)
   const kept: string[] = []
   for (const root of cleaned) {
     if (kept.some((k) => root === k || root.startsWith(k + '/'))) continue

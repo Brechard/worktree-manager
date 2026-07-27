@@ -16,22 +16,26 @@ import {
   FileClock,
   Eye,
   Undo2,
+  AlertTriangle,
 } from 'lucide-react'
 import type { Repository, Worktree, WorktreeStatus, WorktreeDetails } from '@worktree/contracts'
 import { cn } from '../lib/utils'
 import { editorLabel, shortenPath } from '../lib/paths'
 import { api } from '../api'
-import { GitActionsMenu } from './GitActionsMenu'
+import { GitActionsMenu, type MergeMode } from './GitActionsMenu'
 import { DiffViewer } from './DiffViewer'
+import { isSafeToDelete } from '../lib/worktreeSorting'
 
 interface WorktreeRowProps {
   worktree: Worktree
   repository: Repository
   status?: WorktreeStatus | undefined
   editorId: string
-  onDelete: (path: string) => void
+  onDelete: (worktree: Worktree) => void
   onActionError?: (message: string) => void
   onRefresh?: () => void
+  onRefreshWorktree?: (worktree: Worktree) => Promise<void> | void
+  onPatchStatus?: (worktreeId: string, patch: Partial<WorktreeStatus>) => void
 }
 
 export function WorktreeRow({
@@ -42,9 +46,21 @@ export function WorktreeRow({
   onDelete,
   onActionError,
   onRefresh,
+  onRefreshWorktree,
+  onPatchStatus,
 }: WorktreeRowProps) {
   const [busy, setBusy] = useState<
-    'editor' | 'terminal' | 'folder' | 'pull' | 'rebase' | 'push' | 'commit' | 'updateBase' | null
+    | 'editor'
+    | 'terminal'
+    | 'folder'
+    | 'pull'
+    | 'rebase'
+    | 'push'
+    | 'commit'
+    | 'updateBase'
+    | 'checkout'
+    | 'merge'
+    | null
   >(null)
   const [expanded, setExpanded] = useState(false)
   const [details, setDetails] = useState<WorktreeDetails | null>(null)
@@ -78,20 +94,54 @@ export function WorktreeRow({
     }
   }, [expanded, worktree, repository, details, onActionError])
 
-  const gitActions = new Set(['pull', 'rebase', 'push', 'commit', 'updateBase'])
+  const gitActions = new Set([
+    'pull',
+    'rebase',
+    'push',
+    'commit',
+    'updateBase',
+    'checkout',
+    'merge',
+  ])
   const run = async (
-    kind: 'editor' | 'terminal' | 'folder' | 'pull' | 'rebase' | 'push' | 'commit' | 'updateBase',
+    kind:
+      | 'editor'
+      | 'terminal'
+      | 'folder'
+      | 'pull'
+      | 'rebase'
+      | 'push'
+      | 'commit'
+      | 'updateBase'
+      | 'checkout'
+      | 'merge',
     fn: () => Promise<{ success?: boolean; error?: string; output?: string } | string | void>
   ) => {
     setBusy(kind)
+    // `updateBase` can change other worktrees' base-relative status (behind /
+    // merged), so it needs the full re-sync. Every other git action only
+    // affects this worktree — refresh just this row (falling back to the full
+    // refresh if a targeted one isn't wired).
+    const refresh = () => {
+      if (kind === 'updateBase' || !onRefreshWorktree) return onRefresh?.()
+      return onRefreshWorktree(worktree)
+    }
+    // Reconcile this row's status even on failure so an optimistic update (e.g. a
+    // checkout that turned out to conflict) doesn't leave a stale label behind.
+    const reconcile = () => {
+      if (kind !== 'updateBase') void onRefreshWorktree?.(worktree)
+    }
     try {
       const result = await fn()
-      if (result && typeof result === 'object' && 'success' in result && result.success === false) {
+      const failed =
+        result && typeof result === 'object' && 'success' in result && result.success === false
+      if (failed) {
         onActionError?.(result.error || result.output || `${kind} failed`)
+        if (gitActions.has(kind)) reconcile()
       } else if (typeof result === 'string' && result.length > 0) {
         onActionError?.(result)
       } else if (gitActions.has(kind)) {
-        onRefresh?.()
+        await refresh()
         if (expanded) {
           setDetails(null)
           setSelectedFile(null)
@@ -103,6 +153,7 @@ export function WorktreeRow({
       }
     } catch (err) {
       onActionError?.(String(err))
+      if (gitActions.has(kind)) reconcile()
     } finally {
       setBusy(null)
     }
@@ -129,6 +180,16 @@ export function WorktreeRow({
     run('updateBase', () =>
       window.api.updateBaseBranch({ path: worktree.path, baseBranch: repository.baseBranch })
     )
+
+  const handleLoadBranches = () => window.api.getRepoBranches(worktree.path).then((r) => r.branches)
+  const handleCheckout = (branch: string) => {
+    // Swap the branch label immediately; the targeted refresh in run() then
+    // corrects the rest (head commit, ahead/behind, merged) a moment later.
+    onPatchStatus?.(worktree.id, { branch, detached: false })
+    run('checkout', () => window.api.checkoutBranch({ path: worktree.path, branch }))
+  }
+  const handleMerge = (branch: string, mode: MergeMode) =>
+    run('merge', () => window.api.mergeBranch({ path: worktree.path, branch, mode }))
 
   const handleCommit = (all = false) => {
     if (!commitMessage.trim()) return
@@ -205,30 +266,50 @@ export function WorktreeRow({
   const detached = status?.detached ?? liveBranch === 'HEAD'
   const headCommit = status?.headCommit ?? worktree.headCommit
 
-  const safe =
-    !status ||
-    (!status.dirty &&
-      !status.staged &&
-      status.ahead === 0 &&
-      status.unpushed === 0 &&
-      status.mergedIntoBase &&
-      !status.hasOpenPR)
+  // The working-tree folder is gone; git still holds a prunable record for it.
+  // Every git/editor/terminal action would fail on the missing path, so we hide
+  // them and offer a single "prune" action instead.
+  const prunable = worktree.prunable === true
+
+  const safe = !status || worktree.isMain || worktree.prunable || isSafeToDelete(worktree, status)
+
+  // A PR merged into a long-lived branch (a release branch, say) is genuinely
+  // merged — just not into this repo's configured base, which is what the
+  // git-side "unmerged" label below measures. Naming the target keeps the two
+  // labels from reading as a contradiction.
+  const prTargetBranch = status?.pullRequest?.targetBranch
+  const mergedIntoOtherBranch =
+    status?.pullRequest?.state === 'merged' &&
+    prTargetBranch !== undefined &&
+    prTargetBranch !== status.baseBranch
 
   return (
     <div className="border-b border-border last:border-b-0 hover:bg-row-hover">
       <div className="flex items-center justify-between gap-3 px-4 py-3">
         <div
-          onClick={() => setExpanded((v) => !v)}
-          className="min-w-0 flex-1 cursor-pointer text-left"
-          title="Click for details"
+          onClick={() => !prunable && setExpanded((v) => !v)}
+          onKeyDown={(event) => {
+            if (prunable || (event.key !== 'Enter' && event.key !== ' ')) return
+            event.preventDefault()
+            setExpanded((value) => !value)
+          }}
+          role={prunable ? undefined : 'button'}
+          tabIndex={prunable ? undefined : 0}
+          aria-expanded={!prunable ? expanded : undefined}
+          className={cn(
+            'min-w-0 flex-1 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary',
+            prunable ? 'cursor-default' : 'cursor-pointer'
+          )}
+          title={prunable ? undefined : 'Click for details'}
         >
           <div className="mb-1 flex flex-wrap items-center gap-1.5">
             <span className="inline-flex items-center gap-1 rounded-md bg-accent px-2 py-0.5 text-xs font-medium text-foreground">
-              {expanded ? (
-                <ChevronDown className="h-3 w-3 text-primary" />
-              ) : (
-                <ChevronRight className="h-3 w-3 text-primary" />
-              )}
+              {!prunable &&
+                (expanded ? (
+                  <ChevronDown className="h-3 w-3 text-primary" />
+                ) : (
+                  <ChevronRight className="h-3 w-3 text-primary" />
+                ))}
               <GitBranch className="h-3 w-3 text-primary" />
               {detached ? (
                 <>
@@ -244,6 +325,15 @@ export function WorktreeRow({
                 Primary
               </span>
             )}
+            {prunable && (
+              <span
+                className="inline-flex items-center gap-1 rounded-md bg-warning/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-warning"
+                title={worktree.prunableReason || 'Working tree directory is missing'}
+              >
+                <AlertTriangle className="h-3 w-3" />
+                Stale · folder missing
+              </span>
+            )}
             {status?.pullRequest && (
               <button
                 onClick={(e) => {
@@ -257,16 +347,24 @@ export function WorktreeRow({
                   status.pullRequest.state === 'closed' && 'bg-muted/20 text-muted',
                   status.pullRequest.state === 'merged' && 'bg-merged/15 text-merged'
                 )}
-                title={status.pullRequest.title}
+                title={
+                  mergedIntoOtherBranch
+                    ? `${status.pullRequest.title}\n\nMerged into ${prTargetBranch}, not into the configured base ${status.baseBranch}.`
+                    : status.pullRequest.title
+                }
               >
                 <ExternalLink className="h-3 w-3 shrink-0" />
                 <span className="truncate">
-                  {status.pullRequest.state === 'merged' ? 'merged' : status.pullRequest.state} ·{' '}
-                  {status.pullRequest.title}
+                  {mergedIntoOtherBranch
+                    ? `merged into ${prTargetBranch}`
+                    : status.pullRequest.state === 'merged'
+                      ? 'merged'
+                      : status.pullRequest.state}{' '}
+                  · {status.pullRequest.title}
                 </span>
               </button>
             )}
-            {!safe && !worktree.isMain && (
+            {!safe && !worktree.isMain && !prunable && (
               <span className="rounded-md bg-destructive/15 px-2 py-0.5 text-[10px] font-medium text-destructive">
                 not safe to delete
               </span>
@@ -284,13 +382,22 @@ export function WorktreeRow({
                 {headCommit}
               </span>
             )}
-            {worktree.lastModified && (
-              <span className="inline-flex items-center gap-1">
+            {worktree.lastModified !== undefined && (
+              <span
+                className="inline-flex items-center gap-1"
+                title={`Last activity: ${new Date(worktree.lastModified).toLocaleString()}`}
+              >
                 <Clock className="h-3 w-3" />
                 {new Date(worktree.lastModified).toLocaleDateString()}
               </span>
             )}
-            {status && (
+            {prunable && (
+              <span className="inline-flex items-center gap-1 text-warning">
+                <AlertTriangle className="h-3 w-3" />
+                {worktree.prunableReason || 'Working tree directory is missing'}
+              </span>
+            )}
+            {status && !prunable && (
               <>
                 {status.dirty && <span className="text-warning">dirty</span>}
                 {status.staged && <span className="text-warning">staged</span>}
@@ -303,7 +410,28 @@ export function WorktreeRow({
                 {detached ? (
                   <span className="text-muted">detached</span>
                 ) : !status.mergedIntoBase && liveBranch !== status.baseBranch ? (
-                  <span className="text-warning">unmerged</span>
+                  // A stale ref can only produce a false "unmerged" — being an
+                  // ancestor of an older base still holds for the newer one — so
+                  // only the negative verdict has to be downgraded to "unknown".
+                  status.baseFetchError ? (
+                    <span
+                      className="text-warning"
+                      title={`Could not fetch origin/${status.baseBranch}, so the merge check ran against a possibly-stale ref.\n\n${status.baseFetchError}`}
+                    >
+                      merge unknown
+                    </span>
+                  ) : (
+                    <span
+                      className="text-warning"
+                      title={
+                        mergedIntoOtherBranch
+                          ? `Merged into ${prTargetBranch}, but not into the configured base ${status.baseBranch}.`
+                          : `Not merged into ${status.baseBranch}`
+                      }
+                    >
+                      unmerged
+                    </span>
+                  )
                 ) : (
                   status.mergedIntoBase &&
                   !worktree.isMain && <span className="font-medium text-merged">merged</span>
@@ -314,37 +442,64 @@ export function WorktreeRow({
         </div>
 
         <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
-          <GitActionsMenu
-            busy={busy}
-            branch={liveBranch}
-            baseBranch={repository.baseBranch}
-            showCommitInput={showCommitInput}
-            onPull={handlePull}
-            onRebase={handleRebase}
-            onPush={handlePush}
-            onCommit={() => {
-              setExpanded(true)
-              setShowCommitInput(true)
-            }}
-            onUpdateBaseBranch={handleUpdateBaseBranch}
-          />
-          <IconButton
-            title={`Open in ${editorLabel(editorId)}`}
-            onClick={handleOpen}
-            busy={busy === 'editor'}
-          >
-            <Code2 className="h-4 w-4" />
-          </IconButton>
-          <IconButton title="Open in terminal" onClick={handleTerminal} busy={busy === 'terminal'}>
-            <Terminal className="h-4 w-4" />
-          </IconButton>
-          <IconButton title="Reveal in Finder" onClick={handleFolder} busy={busy === 'folder'}>
-            <FolderOpen className="h-4 w-4" />
-          </IconButton>
-          {!worktree.isMain && (
-            <IconButton title="Move to Trash" onClick={() => onDelete(worktree.path)} danger>
-              <Trash2 className="h-4 w-4" />
-            </IconButton>
+          {prunable ? (
+            <button
+              type="button"
+              onClick={() => onDelete(worktree)}
+              title="Remove this stale worktree entry from git"
+              className="inline-flex items-center gap-1.5 rounded-md border border-warning/30 bg-warning/10 px-2.5 py-1.5 text-xs font-medium text-warning transition-colors hover:bg-warning/20"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              Prune
+            </button>
+          ) : (
+            <>
+              {busy && gitActions.has(busy) && (
+                <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-muted">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  {gitBusyLabel(busy, repository.baseBranch)}
+                </span>
+              )}
+              <GitActionsMenu
+                busy={busy}
+                branch={liveBranch}
+                baseBranch={repository.baseBranch}
+                showCommitInput={showCommitInput}
+                loadBranches={handleLoadBranches}
+                onPull={handlePull}
+                onRebase={handleRebase}
+                onPush={handlePush}
+                onCommit={() => {
+                  setExpanded(true)
+                  setShowCommitInput(true)
+                }}
+                onUpdateBaseBranch={handleUpdateBaseBranch}
+                onCheckout={handleCheckout}
+                onMerge={handleMerge}
+              />
+              <IconButton
+                title={`Open in ${editorLabel(editorId)}`}
+                onClick={handleOpen}
+                busy={busy === 'editor'}
+              >
+                <Code2 className="h-4 w-4" />
+              </IconButton>
+              <IconButton
+                title="Open in terminal"
+                onClick={handleTerminal}
+                busy={busy === 'terminal'}
+              >
+                <Terminal className="h-4 w-4" />
+              </IconButton>
+              <IconButton title="Reveal in Finder" onClick={handleFolder} busy={busy === 'folder'}>
+                <FolderOpen className="h-4 w-4" />
+              </IconButton>
+              {!worktree.isMain && (
+                <IconButton title="Move to Trash" onClick={() => onDelete(worktree)} danger>
+                  <Trash2 className="h-4 w-4" />
+                </IconButton>
+              )}
+            </>
           )}
         </div>
       </div>
@@ -447,6 +602,27 @@ export function WorktreeRow({
   )
 }
 
+function gitBusyLabel(kind: string, baseBranch: string): string {
+  switch (kind) {
+    case 'updateBase':
+      return `Updating ${baseBranch}`
+    case 'pull':
+      return 'Pulling'
+    case 'rebase':
+      return 'Rebasing'
+    case 'push':
+      return 'Pushing'
+    case 'commit':
+      return 'Committing'
+    case 'checkout':
+      return 'Checking out'
+    case 'merge':
+      return 'Merging'
+    default:
+      return 'Working'
+  }
+}
+
 function FileList({
   title,
   icon,
@@ -487,8 +663,8 @@ function FileList({
         {title} ({files.length})
       </h4>
       <ul className="space-y-0.5">
-        {files.map((f, i) => (
-          <li key={`${f.path}-${i}`}>
+        {files.map((f) => (
+          <li key={f.path}>
             <div className="group flex items-center gap-1">
               <button
                 onClick={() => onFileClick?.(f)}

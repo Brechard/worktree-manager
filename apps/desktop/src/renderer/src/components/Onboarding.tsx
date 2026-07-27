@@ -73,22 +73,20 @@ export function Onboarding() {
           baseBranch: prev.baseBranch || r.baseBranch,
           provider: prev.provider?.personalAccessToken
             ? prev.provider
-            : r.provider ?? prev.provider,
+            : (r.provider ?? prev.provider),
         }
       })
-    const worktrees = scanResult.worktrees.filter((w) =>
-      repos.some((r) => r.id === w.repositoryId)
-    )
+    const worktrees = scanResult.worktrees.filter((w) => repos.some((r) => r.id === w.repositoryId))
 
     const nextSettings = {
-      watchedDirectories: Array.from(
-        new Set([...(settings?.watchedDirectories ?? []), ...roots])
-      ),
+      watchedDirectories: Array.from(new Set([...(settings?.watchedDirectories ?? []), ...roots])),
       defaultEditor: settings?.defaultEditor ?? 'cursor',
       theme: settings?.theme ?? 'system',
       ...(settings?.defaultTerminal ? { defaultTerminal: settings.defaultTerminal } : {}),
       ...(settings?.githubToken ? { githubToken: settings.githubToken } : {}),
       ...(settings?.azureToken ? { azureToken: settings.azureToken } : {}),
+      worktreeSort: settings?.worktreeSort ?? 'activity',
+      worktreeSortDirection: settings?.worktreeSortDirection ?? 'desc',
     }
 
     await Promise.all([
@@ -139,9 +137,7 @@ export function Onboarding() {
               </button>
             </div>
 
-            {roots.length === 0 && (
-              <p className="text-sm text-muted">No folders selected yet.</p>
-            )}
+            {roots.length === 0 && <p className="text-sm text-muted">No folders selected yet.</p>}
 
             <ul className="space-y-2">
               {roots.map((root, i) => (

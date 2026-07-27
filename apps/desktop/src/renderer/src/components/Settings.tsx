@@ -70,6 +70,8 @@ export function Settings() {
     ...(terminal ? { defaultTerminal: terminal } : {}),
     ...(githubToken ? { githubToken } : {}),
     ...(azureToken ? { azureToken } : {}),
+    worktreeSort: settings?.worktreeSort ?? 'activity',
+    worktreeSortDirection: settings?.worktreeSortDirection ?? 'desc',
   })
 
   const hasChanges = () => {
@@ -81,6 +83,8 @@ export function Settings() {
       defaultTerminal: settings?.defaultTerminal ?? '',
       githubToken: settings?.githubToken ?? '',
       azureToken: settings?.azureToken ?? '',
+      worktreeSort: settings?.worktreeSort ?? 'activity',
+      worktreeSortDirection: settings?.worktreeSortDirection ?? 'desc',
     }
     return (
       JSON.stringify({ ...current, watchedDirectories: [...current.watchedDirectories].sort() }) !==

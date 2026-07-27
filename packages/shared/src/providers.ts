@@ -61,6 +61,7 @@ async function lookupGitHubPullRequest(
     state: string
     draft?: boolean
     merged?: boolean
+    base?: { ref?: string }
   }>
 
   const pr = data[0]
@@ -75,6 +76,7 @@ async function lookupGitHubPullRequest(
     url: pr.html_url,
     state,
     branch,
+    ...(pr.base?.ref ? { targetBranch: pr.base.ref } : {}),
   }
 }
 
@@ -115,6 +117,7 @@ async function lookupAzureDevOpsPullRequest(
         status: string
         creationDate?: string
         isDraft?: boolean
+        targetRefName?: string
       }>
     }
     const pr = data.value
@@ -131,12 +134,15 @@ async function lookupAzureDevOpsPullRequest(
         ? `https://dev.azure.com/${organization}/${encodedProject}/_git/${encodedRepo}/pullrequest/${pr.pullRequestId}`
         : pr.url
 
+    const targetBranch = pr.targetRefName?.replace(/^refs\/heads\//, '')
+
     return {
       id: `ado-${pr.pullRequestId}`,
       title: pr.title,
       url: webUrl,
       state,
       branch,
+      ...(targetBranch ? { targetBranch } : {}),
     }
   }
 

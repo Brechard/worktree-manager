@@ -6,6 +6,7 @@ import type {
   Worktree,
   WorktreeStatus,
 } from '@worktree/contracts'
+import { worktreeSafetyReasons } from '@worktree/contracts'
 import {
   countUnpushed,
   getAheadBehind,
@@ -34,10 +35,29 @@ export async function getWorktreeStatus(options: StatusOptions): Promise<Worktre
   const cwd = worktree.path
   const baseBranch = baseSnapshot?.baseBranch ?? repository.baseBranch ?? 'main'
 
+  // A prunable worktree's directory is gone — running git in it throws (bad cwd).
+  // Return a benign status so the row can render its "stale" state without crashing.
+  if (worktree.prunable) {
+    return {
+      worktreeId: worktree.id,
+      dirty: false,
+      staged: false,
+      ahead: 0,
+      behind: 0,
+      unpushed: 0,
+      mergedIntoBase: false,
+      baseBranch,
+      hasOpenPR: false,
+      branch: worktree.branch,
+      detached: worktree.branch === 'HEAD',
+      ...(worktree.headCommit ? { headCommit: worktree.headCommit } : {}),
+    }
+  }
+
   const resolvedBase = baseSnapshot?.baseBranch ?? baseBranch
 
   const [status, aheadBehind, merged, unpushed, branch, headCommit] = await Promise.all([
-    getStatusPorcelain(cwd),
+    getStatusPorcelain(cwd).catch(() => ({ dirty: false, staged: false, hasUntracked: false })),
     getAheadBehind(cwd).catch(() => ({ ahead: 0, behind: 0, hasUpstream: false })),
     isMerged(cwd, baseBranch, baseSnapshot?.mergeRef).catch(() => false),
     countUnpushed(cwd).catch(() => 0),
@@ -57,6 +77,9 @@ export async function getWorktreeStatus(options: StatusOptions): Promise<Worktre
     unpushed: hasRemoteConfigured ? (aheadBehind.hasUpstream ? aheadBehind.ahead : unpushed) : 0,
     mergedIntoBase: merged,
     baseBranch: resolvedBase,
+    // A failed fetch means `merged` was decided against a stale local ref (or no
+    // ref at all), so the row has to say "unknown" rather than assert "unmerged".
+    ...(baseSnapshot?.fetchError ? { baseFetchError: baseSnapshot.fetchError } : {}),
     hasOpenPR: pullRequest?.state === 'open' || pullRequest?.state === 'draft',
     branch,
     detached,
@@ -121,25 +144,8 @@ export async function getWorktreeDetails(options: StatusOptions) {
 }
 
 export function evaluateSafety(worktree: Worktree, status: WorktreeStatus): SafetyResult {
-  const reasons: string[] = []
-  let safe = true
-
-  if (status.dirty || status.staged) {
-    safe = false
-    reasons.push('Has uncommitted changes')
-  }
-  if (status.ahead > 0 || status.unpushed > 0) {
-    safe = false
-    reasons.push(`${status.ahead > 0 ? status.ahead : status.unpushed} unpushed commit(s)`)
-  }
-  if (!status.mergedIntoBase && worktree.branch !== status.baseBranch && worktree.branch !== 'HEAD') {
-    safe = false
-    reasons.push(`Branch not merged into ${status.baseBranch}`)
-  }
-  if (status.hasOpenPR) {
-    safe = false
-    reasons.push('Has an open pull request')
-  }
-
-  return { worktreeId: worktree.id, safe, reasons }
+  // Shared with the renderer's badge/filter/grouping via contracts so the
+  // confirmation dialog can never disagree with the "not safe to delete" badge.
+  const reasons = worktreeSafetyReasons(worktree, status)
+  return { worktreeId: worktree.id, safe: reasons.length === 0, reasons }
 }

@@ -15,6 +15,7 @@ import { readFile, writeFile, mkdir, copyFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { z } from 'zod'
 import {
+  checkoutBranch,
   commitWorktree,
   detectProviderToken,
   discardFile,
@@ -25,7 +26,9 @@ import {
   getDefaultBranch,
   getWorktreeDetails,
   getWorktreeStatus,
+  mergeBranch,
   parseProviderFromRemoteUrl,
+  pruneWorktrees,
   pullWorktree,
   pushWorktree,
   rebaseWorktree,
@@ -34,6 +37,7 @@ import {
   runCommand,
   toRepositoryBaseStatus,
   updateBaseBranch,
+  type MergeMode,
 } from '@worktree/shared'
 import {
   appSettingsSchema,
@@ -215,12 +219,12 @@ async function saveWorktrees(worktrees: Worktree[]) {
   await writeFile(worktreesPath(), JSON.stringify(worktrees, null, 2))
 }
 
-function getIconPath(): string | undefined {
+function getIconPath(file = 'icon.png'): string | undefined {
   const candidates = [
-    join(app.getAppPath(), 'resources', 'icon.png'),
-    join(__dirname, '..', '..', 'resources', 'icon.png'),
-    join(__dirname, '..', 'resources', 'icon.png'),
-    join(process.resourcesPath, 'icon.png'),
+    join(app.getAppPath(), 'resources', file),
+    join(__dirname, '..', '..', 'resources', file),
+    join(__dirname, '..', 'resources', file),
+    join(process.resourcesPath, file),
   ]
   for (const p of candidates) {
     if (existsSync(p)) return p
@@ -289,10 +293,14 @@ app.whenReady().then(async () => {
   await migrateLegacyConfig()
   nativeTheme.themeSource = 'system'
 
-  const iconPath = getIconPath()
-  if (iconPath && process.platform === 'darwin' && app.dock) {
-    app.dock.setIcon(nativeImage.createFromPath(iconPath))
+  // Dock icons are drawn without macOS's rounding mask, so use the pre-rounded
+  // variant here (the packaged .icns stays full-bleed for the OS to mask).
+  const dockIconPath = getIconPath('icon-rounded.png') ?? getIconPath()
+  if (dockIconPath && process.platform === 'darwin' && app.dock) {
+    app.dock.setIcon(nativeImage.createFromPath(dockIconPath))
   }
+  // Unmistakable "this is a hot-reload dev run, not the installed app" marker.
+  if (isDev && app.dock) app.dock.setBadge('DEV')
 
   createWindow()
 
@@ -458,6 +466,38 @@ ipcMain.handle(
   }
 )
 
+// Refresh a single worktree's status (git + one PR lookup) without re-scanning
+// every other worktree — used after a git action touches just this worktree.
+ipcMain.handle(
+  'get-worktree-status',
+  async (_, args: { worktree: Worktree; repository: Repository }): Promise<WorktreeStatus> => {
+    const settings = await loadSettings()
+    const azureToken = await resolveAzureToken(settings.azureToken)
+    const globalTokens = {
+      ...(settings.githubToken ? { github: settings.githubToken } : {}),
+      ...(azureToken ? { azure: azureToken } : {}),
+    }
+    // Take the same fetched, remote-first base ref the full refresh uses.
+    // Without it this path fell back to the local `refs/heads/<base>`, so the
+    // merged/unmerged verdict right after a pull or push was computed against a
+    // base that may not have been fetched in days — and then silently flipped
+    // on the next full refresh.
+    const [pullRequest, baseSnapshot] = await Promise.all([
+      refreshPullRequest(args.worktree, args.repository, globalTokens).catch(() => undefined),
+      refreshBaseBranch(
+        statusCwd(args.repository, [args.worktree]),
+        args.repository.baseBranch || 'main'
+      ).catch(() => undefined),
+    ])
+    return getWorktreeStatus({
+      worktree: args.worktree,
+      repository: args.repository,
+      pullRequest: pullRequest ?? null,
+      ...(baseSnapshot ? { baseSnapshot } : {}),
+    })
+  }
+)
+
 ipcMain.handle(
   'evaluate-safety',
   async (_, args: { worktree: Worktree; status: WorktreeStatus }) => {
@@ -511,6 +551,17 @@ ipcMain.handle('push-worktree', async (_, path: string) => {
   return pushWorktree(path)
 })
 
+ipcMain.handle('checkout-branch', async (_, args: { path: string; branch: string }) => {
+  return checkoutBranch(args.path, args.branch)
+})
+
+ipcMain.handle(
+  'merge-branch',
+  async (_, args: { path: string; branch: string; mode: MergeMode }) => {
+    return mergeBranch(args.path, args.branch, args.mode)
+  }
+)
+
 ipcMain.handle(
   'commit-worktree',
   async (_, args: { path: string; message: string; all?: boolean }) => {
@@ -545,9 +596,33 @@ ipcMain.handle('open-in-file-manager', async (_, path: string) => {
   return err ? { success: false, error: err } : { success: true }
 })
 
-ipcMain.handle('trash-worktree', async (_, path: string) => {
-  return shell.trashItem(path)
-})
+ipcMain.handle(
+  'remove-worktree',
+  async (
+    _,
+    { path, repoPath, missing }: { path: string; repoPath: string; missing?: boolean }
+  ) => {
+    try {
+      // Present worktree: move its files to the system Trash (recoverable).
+      // Missing/stale worktree: nothing on disk to trash — skip straight to prune.
+      if (!missing) {
+        try {
+          await shell.trashItem(path)
+        } catch (err) {
+          // If it failed only because the folder is already gone, fall through to
+          // prune so git's stale record still gets cleaned up.
+          if (existsSync(path)) return { success: false, error: String(err) }
+        }
+      }
+      // Deregister from git so no prunable "ghost" entry lingers (this also clears
+      // any other already-stale worktrees in the same repo).
+      if (repoPath) await pruneWorktrees(repoPath).catch(() => undefined)
+      return { success: true }
+    } catch (err) {
+      return { success: false, error: String(err) }
+    }
+  }
+)
 
 ipcMain.handle('open-external', async (_, url: string) => {
   return shell.openExternal(url)
@@ -562,6 +637,7 @@ ipcMain.handle('parse-remote-provider', async (_, remoteUrl: string) => {
 })
 
 ipcMain.handle('get-app-version', () => app.getVersion())
+ipcMain.handle('is-dev', () => isDev)
 
 ipcMain.handle('get-repo-branches', async (_, path: string) => {
   const [branches, defaultBranch] = await Promise.all([

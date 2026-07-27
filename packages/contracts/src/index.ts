@@ -28,6 +28,12 @@ export const repositorySchema = z.object({
 })
 export type Repository = z.infer<typeof repositorySchema>
 
+export const worktreeSortSchema = z.enum(['activity', 'name', 'safety'])
+export type WorktreeSort = z.infer<typeof worktreeSortSchema>
+
+export const worktreeSortDirectionSchema = z.enum(['asc', 'desc'])
+export type WorktreeSortDirection = z.infer<typeof worktreeSortDirectionSchema>
+
 export const worktreeSchema = z.object({
   id: z.string(),
   repositoryId: z.string(),
@@ -35,7 +41,12 @@ export const worktreeSchema = z.object({
   branch: z.string(),
   headCommit: z.string().optional(),
   isMain: z.boolean().default(false),
+  /** Latest known activity: changed-file mtime, commit time, or directory mtime. */
   lastModified: z.number().optional(),
+  /** Working tree directory is gone; git still has a (prunable) record for it. */
+  prunable: z.boolean().default(false),
+  /** Why the worktree is considered stale (missing dir / gitdir), when prunable. */
+  prunableReason: z.string().optional(),
 })
 export type Worktree = z.infer<typeof worktreeSchema>
 
@@ -48,6 +59,10 @@ export const pullRequestSchema = z.object({
   url: z.string(),
   state: prStateSchema,
   branch: z.string(),
+  /** Branch the PR targets. Often differs from the repository's configured base
+   *  (e.g. a long-lived release branch), which is why a merged PR can still read
+   *  as unmerged against the base. */
+  targetBranch: z.string().optional(),
 })
 export type PullRequest = z.infer<typeof pullRequestSchema>
 
@@ -85,6 +100,9 @@ export const worktreeStatusSchema = z.object({
   unpushed: z.number().default(0),
   mergedIntoBase: z.boolean().default(false),
   baseBranch: z.string(),
+  /** Set when the base-branch fetch failed, so `mergedIntoBase` was decided
+   *  against a possibly-stale ref (or no ref at all) and cannot be trusted. */
+  baseFetchError: z.string().optional(),
   hasOpenPR: z.boolean().default(false),
   pullRequest: pullRequestSchema.optional(),
   lastFetched: z.number().optional(),
@@ -127,6 +145,9 @@ export const appSettingsSchema = z.object({
   githubToken: z.string().optional(),
   azureToken: z.string().optional(),
   lastSelectedRepositoryId: z.string().optional(),
+  /** Worktree list ordering; defaults to most recently active first. */
+  worktreeSort: worktreeSortSchema.default('activity'),
+  worktreeSortDirection: worktreeSortDirectionSchema.default('desc'),
 })
 export type AppSettings = z.infer<typeof appSettingsSchema>
 
@@ -136,6 +157,43 @@ export const safetyResultSchema = z.object({
   reasons: z.array(z.string()),
 })
 export type SafetyResult = z.infer<typeof safetyResultSchema>
+
+/**
+ * The single source of truth for "is this worktree safe to remove". It lives in
+ * contracts because both the main process (delete confirmation) and the
+ * renderer (badge, filter, grouping) need it, and they drifted when each kept
+ * its own copy.
+ *
+ * Only content checks live here. `isMain` / `prunable` are deliberately left to
+ * callers: the delete dialog handles those cases before it ever asks, while the
+ * list uses them to pick a group rather than a safety verdict.
+ */
+export function worktreeSafetyReasons(worktree: Worktree, status: WorktreeStatus): string[] {
+  const reasons: string[] = []
+  // Live branch from the refresh, not the value captured at the last full scan,
+  // which goes stale as soon as someone checks out something else.
+  const branch = status.branch ?? worktree.branch
+
+  if (status.dirty || status.staged) reasons.push('Has uncommitted changes')
+  if (status.ahead > 0 || status.unpushed > 0) {
+    reasons.push(`${status.ahead > 0 ? status.ahead : status.unpushed} unpushed commit(s)`)
+  }
+  if (!status.mergedIntoBase && branch !== status.baseBranch && branch !== 'HEAD') {
+    reasons.push(
+      status.baseFetchError
+        ? `Could not confirm the branch is merged into ${status.baseBranch} (fetch failed)`
+        : `Branch not merged into ${status.baseBranch}`
+    )
+  }
+  if (status.hasOpenPR) reasons.push('Has an open pull request')
+
+  return reasons
+}
+
+export function isSafeToDelete(worktree: Worktree, status?: WorktreeStatus): boolean {
+  if (worktree.isMain || worktree.prunable || !status) return false
+  return worktreeSafetyReasons(worktree, status).length === 0
+}
 
 export const detectedTokenSchema = z.object({
   provider: providerTypeSchema,

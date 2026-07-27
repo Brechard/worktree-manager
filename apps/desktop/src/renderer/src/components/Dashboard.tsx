@@ -9,8 +9,16 @@ import {
   Star,
   ChevronDown,
   Loader2,
+  ArrowDownUp,
+  Clock3,
+  ShieldCheck,
 } from 'lucide-react'
-import type { Repository } from '@worktree/contracts'
+import type {
+  Repository,
+  Worktree,
+  WorktreeSort,
+  WorktreeSortDirection,
+} from '@worktree/contracts'
 import { useAppStore } from '../store'
 import { api } from '../api'
 import { WorktreeRow } from './WorktreeRow'
@@ -18,8 +26,25 @@ import { ProjectConfigModal } from './ProjectConfigModal'
 import { TitleBar } from './TitleBar'
 import { cn } from '../lib/utils'
 import { EDITOR_OPTIONS, editorLabel, shortenPath } from '../lib/paths'
+import { groupWorktrees, isSafeToDelete, sortWorktrees } from '../lib/worktreeSorting'
 import type { RepositoryBaseStatus } from '@worktree/contracts'
 import { BaseBranchStatus } from './BaseBranchStatus'
+
+const SORT_MODES: { value: WorktreeSort; label: string }[] = [
+  { value: 'activity', label: 'Recent activity' },
+  { value: 'name', label: 'Branch name' },
+  { value: 'safety', label: 'Cleanup readiness' },
+]
+
+function defaultDirectionFor(sort: WorktreeSort): WorktreeSortDirection {
+  return sort === 'name' ? 'asc' : sort === 'activity' ? 'desc' : 'asc'
+}
+
+function directionLabel(sort: WorktreeSort, direction: WorktreeSortDirection): string {
+  if (sort === 'activity') return direction === 'desc' ? 'Newest first' : 'Oldest first'
+  if (sort === 'name') return direction === 'asc' ? 'A–Z' : 'Z–A'
+  return direction === 'asc' ? 'Cleanup first' : 'Active first'
+}
 
 export function Dashboard() {
   const {
@@ -30,6 +55,8 @@ export function Dashboard() {
     selectedRepositoryId,
     settings,
     setStatuses,
+    patchStatus,
+    setSettings,
     setView,
     setRepositories,
     setWorktrees,
@@ -68,6 +95,16 @@ export function Dashboard() {
       setLoading(false)
       setStatusProgress(null)
     }
+  }
+
+  // Refresh just one worktree's status (git + PR for that worktree only) and
+  // merge it in — used after a git action instead of the full loadStatuses,
+  // which re-scans every worktree in every repo and does a PR lookup per row.
+  const refreshWorktreeStatus = async (worktree: Worktree) => {
+    const repo = repositories.find((r) => r.id === worktree.repositoryId)
+    if (!repo) return
+    const status = await api.getWorktreeStatus({ worktree, repository: repo })
+    patchStatus(worktree.id, status)
   }
 
   useEffect(() => {
@@ -209,37 +246,55 @@ export function Dashboard() {
   }
 
   const effectiveEditor = selectedRepo?.preferredEditor || settings?.defaultEditor || 'cursor'
+  const sortMode = settings?.worktreeSort ?? 'activity'
+  const sortDirection = settings?.worktreeSortDirection ?? defaultDirectionFor(sortMode)
+
+  const updateWorktreeSort = async (
+    nextSort: WorktreeSort,
+    nextDirection: WorktreeSortDirection
+  ) => {
+    const current = useAppStore.getState().settings ?? settings
+    if (!current) return
+    const next = {
+      ...current,
+      worktreeSort: nextSort,
+      worktreeSortDirection: nextDirection,
+    }
+    setSettings(next)
+    try {
+      await api.setSettings(next)
+    } catch (err) {
+      setActionError(`Could not save worktree ordering: ${String(err)}`)
+    }
+  }
 
   const repoWorktrees = useMemo(() => {
     if (!selectedRepo) return []
-    return worktrees
+    const filtered = worktrees
       .filter((w) => w.repositoryId === selectedRepo.id)
       .filter((w) => {
         const status = statuses[w.id]
-        const text = `${w.branch} ${w.path}`.toLowerCase()
+        const text = `${status?.branch ?? w.branch} ${w.path}`.toLowerCase()
         if (search && !text.includes(search.toLowerCase())) return false
         if (filter === 'dirty') return Boolean(status?.dirty || status?.staged)
         if (filter === 'unmerged')
-          return Boolean(status && !status.mergedIntoBase && w.branch !== status.baseBranch)
-        if (filter === 'unpushed') return (status?.ahead ?? 0) > 0 || (status?.unpushed ?? 0) > 0
-        if (filter === 'safe') {
-          if (!status) return false
-          return !(
-            status.dirty ||
-            status.staged ||
-            status.ahead > 0 ||
-            status.unpushed > 0 ||
-            !status.mergedIntoBase ||
-            status.hasOpenPR
+          return Boolean(
+            status &&
+            !status.mergedIntoBase &&
+            (status.branch ?? w.branch) !== status.baseBranch &&
+            (status.branch ?? w.branch) !== 'HEAD'
           )
-        }
+        if (filter === 'unpushed') return (status?.ahead ?? 0) > 0 || (status?.unpushed ?? 0) > 0
+        if (filter === 'safe') return isSafeToDelete(w, status)
         return true
       })
-      .sort((a, b) => {
-        if (a.isMain !== b.isMain) return a.isMain ? -1 : 1
-        return a.branch.localeCompare(b.branch)
-      })
-  }, [selectedRepo, worktrees, statuses, filter, search])
+    return sortWorktrees(filtered, statuses, sortMode, sortDirection)
+  }, [selectedRepo, worktrees, statuses, filter, search, sortMode, sortDirection])
+
+  const worktreeSections = useMemo(
+    () => groupWorktrees(repoWorktrees, statuses, sortMode === 'safety'),
+    [repoWorktrees, statuses, sortMode]
+  )
 
   const worktreeCountByRepo = useMemo(() => {
     const map = new Map<string, number>()
@@ -249,13 +304,37 @@ export function Dashboard() {
     return map
   }, [worktrees])
 
-  const handleDelete = async (path: string) => {
-    const w = worktrees.find((x) => x.path === path)
-    if (!w) return
+  const handleDelete = async (w: Worktree) => {
     if (w.isMain) {
       window.alert('The primary worktree cannot be deleted from here.')
       return
     }
+    const repo = repositories.find((r) => r.id === w.repositoryId)
+    if (!repo) return
+
+    // Stale worktree: the folder is already gone — there's nothing to trash, we
+    // just clear git's leftover record. Pruning removes every stale entry in the
+    // repo at once, so drop them all from the list.
+    if (w.prunable) {
+      const ok = window.confirm(
+        `This worktree's folder is already gone.\n\nRemove the stale entry from git?\n${shortenPath(w.path)}`
+      )
+      if (!ok) return
+      const res = await window.api.removeWorktree({
+        path: w.path,
+        repoPath: repo.path,
+        missing: true,
+      })
+      if (!res.success) {
+        setActionError(res.error || 'Failed to prune worktree')
+        return
+      }
+      const next = worktrees.filter((x) => !(x.repositoryId === repo.id && x.prunable))
+      setWorktrees(next)
+      await api.setWorktrees(next)
+      return
+    }
+
     const status = statuses[w.id]
     if (status) {
       const safety = await api.evaluateSafety({ worktree: w, status })
@@ -266,25 +345,25 @@ export function Dashboard() {
         if (!ok) return
       } else {
         const ok = window.confirm(
-          `Move worktree to Trash?\n${shortenPath(path)}\n\nThis uses the system Trash and can be restored.`
+          `Move worktree to Trash?\n${shortenPath(w.path)}\n\nThis uses the system Trash and can be restored.`
         )
         if (!ok) return
       }
     } else {
       const ok = window.confirm(
-        `Move worktree to Trash?\n${shortenPath(path)}\n\nThis uses the system Trash and can be restored.`
+        `Move worktree to Trash?\n${shortenPath(w.path)}\n\nThis uses the system Trash and can be restored.`
       )
       if (!ok) return
     }
 
-    try {
-      await api.trashWorktree(path)
-      const next = worktrees.filter((x) => x.path !== path)
-      setWorktrees(next)
-      await api.setWorktrees(next)
-    } catch (err) {
-      setActionError(String(err))
+    const res = await window.api.removeWorktree({ path: w.path, repoPath: repo.path })
+    if (!res.success) {
+      setActionError(res.error || 'Failed to remove worktree')
+      return
     }
+    const next = worktrees.filter((x) => x.path !== w.path)
+    setWorktrees(next)
+    await api.setWorktrees(next)
   }
 
   return (
@@ -542,6 +621,46 @@ export function Dashboard() {
                     </button>
                   ))}
                 </div>
+                <div className="flex items-center gap-1 rounded-md border border-border bg-card px-2 py-0.5 text-xs">
+                  {sortMode === 'activity' ? (
+                    <Clock3 className="h-3.5 w-3.5 text-primary" />
+                  ) : sortMode === 'safety' ? (
+                    <ShieldCheck className="h-3.5 w-3.5 text-success" />
+                  ) : (
+                    <ArrowDownUp className="h-3.5 w-3.5 text-primary" />
+                  )}
+                  <span className="text-muted">Sort</span>
+                  <div className="relative">
+                    <select
+                      aria-label="Sort worktrees by"
+                      value={sortMode}
+                      onChange={(e) => {
+                        const nextSort = e.target.value as WorktreeSort
+                        void updateWorktreeSort(nextSort, defaultDirectionFor(nextSort))
+                      }}
+                      className="appearance-none bg-transparent pr-4 font-medium outline-none"
+                    >
+                      {SORT_MODES.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown className="pointer-events-none absolute right-0 top-1/2 h-3 w-3 -translate-y-1/2 text-muted" />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void updateWorktreeSort(sortMode, sortDirection === 'asc' ? 'desc' : 'asc')
+                    }
+                    className="inline-flex items-center gap-1 rounded px-1.5 py-1 text-[11px] font-medium text-muted hover:bg-accent hover:text-foreground"
+                    title={`Reverse ordering (${directionLabel(sortMode, sortDirection)})`}
+                    aria-label={`Reverse ordering, currently ${directionLabel(sortMode, sortDirection)}`}
+                  >
+                    <span>{directionLabel(sortMode, sortDirection)}</span>
+                    <ArrowDownUp className="h-3 w-3" />
+                  </button>
+                </div>
               </div>
 
               <div className="flex-1 overflow-auto p-4">
@@ -550,18 +669,42 @@ export function Dashboard() {
                     <p className="text-sm">No worktrees match this filter.</p>
                   </div>
                 ) : (
-                  <div className="rounded-xl border border-border bg-card">
-                    {repoWorktrees.map((w) => (
-                      <WorktreeRow
-                        key={w.id}
-                        worktree={w}
-                        repository={selectedRepo}
-                        status={statuses[w.id]}
-                        editorId={effectiveEditor}
-                        onDelete={handleDelete}
-                        onActionError={setActionError}
-                        onRefresh={loadStatuses}
-                      />
+                  <div className="overflow-hidden rounded-xl border border-border bg-card">
+                    {worktreeSections.map((section, sectionIndex) => (
+                      <section
+                        key={section.key}
+                        className={cn(sectionIndex > 0 && 'border-t border-border')}
+                      >
+                        {section.label && (
+                          <div className="flex items-center justify-between border-b border-border bg-accent/35 px-4 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted">
+                            <span className="inline-flex items-center gap-1.5">
+                              {section.key === 'safe' ? (
+                                <ShieldCheck className="h-3.5 w-3.5 text-success" />
+                              ) : (
+                                <ArrowDownUp className="h-3.5 w-3.5" />
+                              )}
+                              {section.label}
+                            </span>
+                            <span className="font-mono text-[10px] text-muted/80">
+                              {section.worktrees.length}
+                            </span>
+                          </div>
+                        )}
+                        {section.worktrees.map((w) => (
+                          <WorktreeRow
+                            key={w.id}
+                            worktree={w}
+                            repository={selectedRepo}
+                            status={statuses[w.id]}
+                            editorId={effectiveEditor}
+                            onDelete={handleDelete}
+                            onActionError={setActionError}
+                            onRefresh={loadStatuses}
+                            onRefreshWorktree={refreshWorktreeStatus}
+                            onPatchStatus={patchStatus}
+                          />
+                        ))}
+                      </section>
                     ))}
                   </div>
                 )}

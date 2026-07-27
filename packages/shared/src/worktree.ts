@@ -5,6 +5,8 @@ import {
   getDefaultBranch,
   getDefaultRemoteUrl,
   getHeadCommit,
+  getLastCommitTimestamp,
+  getStatusFiles,
   getTopLevel,
   getWorktreeList,
   type WorktreeEntry,
@@ -217,20 +219,24 @@ export async function discoverRepositories(
 }
 
 async function buildWorktree(entry: WorktreeEntry, repoId: string): Promise<Worktree> {
-  const headCommit = entry.head
-    ? entry.head.slice(0, 7)
-    : await getHeadCommit(entry.path).catch(() => undefined)
-  let lastModified: number | undefined
-  try {
-    const s = await stat(entry.path)
-    lastModified = s.mtimeMs
-  } catch {
-    // ignore
-  }
+  const [headCommit, activity] = await Promise.all([
+    entry.head
+      ? Promise.resolve(entry.head.slice(0, 7))
+      : getHeadCommit(entry.path).catch(() => undefined),
+    getWorktreeActivity(entry.path),
+  ])
+  const { lastModified, missing } = activity
 
   const branch = entry.detached ? 'HEAD' : (entry.branch ?? 'HEAD')
+  const prunable = entry.prunable === true || missing
   const isMain =
-    !entry.detached && branch !== 'HEAD' && !entry.bare && (await isMainWorktree(entry.path))
+    !prunable &&
+    !entry.detached &&
+    branch !== 'HEAD' &&
+    !entry.bare &&
+    (await isMainWorktree(entry.path))
+  const prunableReason =
+    entry.prunableReason ?? (missing ? 'Working tree directory is missing' : undefined)
 
   return {
     id: stableId(entry.path),
@@ -240,6 +246,54 @@ async function buildWorktree(entry: WorktreeEntry, repoId: string): Promise<Work
     headCommit,
     isMain,
     lastModified,
+    prunable,
+    ...(prunable && prunableReason ? { prunableReason } : {}),
+  }
+}
+
+/**
+ * Build a useful activity signal without walking every file in the repository.
+ * The worktree directory catches checkouts and file additions; changed-file
+ * mtimes catch edits inside nested folders; the latest commit covers clean trees.
+ */
+async function getWorktreeActivity(path: string): Promise<{
+  lastModified?: number
+  missing: boolean
+}> {
+  let latest: number | undefined
+  try {
+    latest = (await stat(path)).mtimeMs
+  } catch {
+    return { missing: true }
+  }
+
+  const [lastCommit, changedFiles] = await Promise.all([
+    getLastCommitTimestamp(path).catch(() => undefined),
+    getStatusFiles(path).catch(() => ({ dirty: [], staged: [], untracked: [] })),
+  ])
+  if (lastCommit !== undefined) latest = Math.max(latest, lastCommit)
+
+  const changedPaths = new Set([
+    ...changedFiles.dirty.map((file) => file.path),
+    ...changedFiles.staged.map((file) => file.path),
+    ...changedFiles.untracked.map((file) => file.path),
+  ])
+  for (const changedPath of changedPaths) {
+    const absolutePath = resolve(path, changedPath)
+    const fileMtime = await getMtime(absolutePath)
+    const parentMtime = fileMtime === undefined ? await getMtime(dirname(absolutePath)) : undefined
+    const candidate = fileMtime ?? parentMtime
+    if (candidate !== undefined) latest = Math.max(latest, candidate)
+  }
+
+  return { lastModified: latest, missing: false }
+}
+
+async function getMtime(path: string): Promise<number | undefined> {
+  try {
+    return (await stat(path)).mtimeMs
+  } catch {
+    return undefined
   }
 }
 

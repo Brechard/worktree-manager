@@ -37,6 +37,14 @@ export async function getHeadCommit(cwd: string): Promise<string | undefined> {
   return stdout || undefined
 }
 
+/** Return the timestamp of the most recent commit in milliseconds. */
+export async function getLastCommitTimestamp(cwd: string): Promise<number | undefined> {
+  const { stdout, exitCode } = await runGit(cwd, ['log', '-1', '--format=%ct'])
+  if (exitCode !== 0) return undefined
+  const seconds = Number(stdout.trim())
+  return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : undefined
+}
+
 export async function getTopLevel(cwd: string): Promise<string | undefined> {
   const { stdout, exitCode } = await runGit(cwd, ['rev-parse', '--show-toplevel'])
   if (exitCode !== 0) return undefined
@@ -55,6 +63,31 @@ export async function getWorktreeList(cwd: string): Promise<WorktreeEntry[]> {
   return parseWorktreeList(stdout)
 }
 
+/**
+ * Deregister worktrees whose working tree is gone. `cwd` must be a live worktree
+ * of the repo (typically the main repo path). Cleans every stale entry at once.
+ */
+export async function pruneWorktrees(cwd: string): Promise<{ success: boolean; output: string }> {
+  const { stdout, stderr, exitCode } = await runGit(cwd, ['worktree', 'prune', '-v'])
+  return { success: exitCode === 0, output: stdout || stderr }
+}
+
+/**
+ * Remove a linked worktree via git (deletes its directory and deregisters it).
+ * `cwd` must be a live worktree of the repo.
+ */
+export async function removeWorktree(
+  cwd: string,
+  worktreePath: string,
+  force = false
+): Promise<{ success: boolean; output: string }> {
+  const args = ['worktree', 'remove']
+  if (force) args.push('--force')
+  args.push(worktreePath)
+  const { stdout, stderr, exitCode } = await runGit(cwd, args)
+  return { success: exitCode === 0, output: stdout || stderr }
+}
+
 export interface WorktreeEntry {
   path: string
   head?: string
@@ -62,6 +95,10 @@ export interface WorktreeEntry {
   detached: boolean
   locked?: boolean
   bare: boolean
+  /** git reports the worktree as prunable (its working tree / gitdir is gone). */
+  prunable?: boolean
+  /** Human-readable reason git gave for prunability, when available. */
+  prunableReason?: string
 }
 
 export function parseWorktreeList(output: string): WorktreeEntry[] {
@@ -78,6 +115,8 @@ export function parseWorktreeList(output: string): WorktreeEntry[] {
       if (current.head !== undefined) entry.head = current.head
       if (current.branch !== undefined) entry.branch = current.branch
       if (current.locked !== undefined) entry.locked = current.locked
+      if (current.prunable !== undefined) entry.prunable = current.prunable
+      if (current.prunableReason !== undefined) entry.prunableReason = current.prunableReason
       entries.push(entry)
     }
     current = {}
@@ -96,7 +135,11 @@ export function parseWorktreeList(output: string): WorktreeEntry[] {
     else if (key === 'detached') current.detached = true
     else if (key === 'locked') current.locked = true
     else if (key === 'bare') current.bare = true
-    else if (key === 'prunable') current.locked = false // ignore value
+    else if (key === 'prunable') {
+      // git marks an entry prunable when its working tree / gitdir is gone.
+      current.prunable = true
+      if (value) current.prunableReason = value
+    }
   }
   flush()
   return entries
@@ -357,7 +400,8 @@ export async function discardFile(
     const { stdout, stderr, exitCode } = await runGit(cwd, ['clean', '-f', '--', filePath])
     return {
       success: exitCode === 0,
-      output: exitCode === 0 ? stdout || `Removed ${filePath}` : stderr || `Could not remove ${filePath}`,
+      output:
+        exitCode === 0 ? stdout || `Removed ${filePath}` : stderr || `Could not remove ${filePath}`,
     }
   }
   const { stdout, stderr, exitCode } = await runGit(cwd, [
@@ -370,7 +414,8 @@ export async function discardFile(
   ])
   return {
     success: exitCode === 0,
-    output: exitCode === 0 ? stdout || `Reverted ${filePath}` : stderr || `Could not revert ${filePath}`,
+    output:
+      exitCode === 0 ? stdout || `Reverted ${filePath}` : stderr || `Could not revert ${filePath}`,
   }
 }
 
@@ -409,6 +454,38 @@ export async function commitWorktree(
   return {
     success: exitCode === 0,
     output: exitCode === 0 ? stdout || 'Committed' : stderr || 'Commit failed',
+  }
+}
+
+export async function checkoutBranch(cwd: string, branch: string): Promise<GitActionResult> {
+  // `git checkout <branch>` DWIMs a remote-only branch into a tracking branch.
+  const { stdout, stderr, exitCode } = await runGit(cwd, ['checkout', branch])
+  return {
+    success: exitCode === 0,
+    // git prints "Switched to branch" to stderr on success.
+    output:
+      exitCode === 0 ? stderr || stdout || `Checked out ${branch}` : stderr || `Checkout failed`,
+  }
+}
+
+export type MergeMode = 'merge' | 'no-ff' | 'squash' | 'rebase'
+
+export async function mergeBranch(
+  cwd: string,
+  branch: string,
+  mode: MergeMode = 'merge'
+): Promise<GitActionResult> {
+  let args: string[]
+  if (mode === 'rebase') args = ['rebase', branch]
+  else if (mode === 'squash') args = ['merge', '--squash', branch]
+  else if (mode === 'no-ff') args = ['merge', '--no-ff', branch]
+  else args = ['merge', branch]
+
+  const { stdout, stderr, exitCode } = await runGit(cwd, args)
+  const verb = mode === 'rebase' ? 'Rebased onto' : mode === 'squash' ? 'Squash-merged' : 'Merged'
+  return {
+    success: exitCode === 0,
+    output: exitCode === 0 ? stdout || `${verb} ${branch}` : stderr || stdout || `${mode} failed`,
   }
 }
 

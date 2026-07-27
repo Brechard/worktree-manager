@@ -15,6 +15,12 @@ stripped: prefix commands with `env -u ELECTRON_RUN_AS_NODE`.
 - Dev (hot-reload renderer + main): `cd apps/desktop && env -u ELECTRON_RUN_AS_NODE npx electron-vite dev`
 - Run the built app: `cd apps/desktop && env -u ELECTRON_RUN_AS_NODE node_modules/electron/dist/Electron.app/Contents/MacOS/Electron dist-electron/main/index.cjs`
 - Screenshot the running app (macOS): focus its window, then `screencapture -o -x /tmp/shot.png`
+- Drive the running app (agent-browser via CDP): launch with `--remote-debugging-port=9222`, then
+  `agent-browser connect "$(curl -s localhost:9222/json/list | python3 -c "import sys,json;print(next(t['webSocketDebuggerUrl'] for t in json.load(sys.stdin) if t['type']=='page'))")"`.
+  Connect to the **page** websocket, not the bare port (the port target is a blank page). CDP
+  screenshots of this window come back blank — use `screencapture` for pixels; use agent-browser
+  only for `snapshot`/`click`/`fill`. Heads-up: if the user is testing the app at the same time,
+  your clicks fight theirs — ask or hold off rather than driving it out from under them.
 
 Gotcha: plain `npm run dev` (turbo → bun) inherits `ELECTRON_RUN_AS_NODE` and fails the same way —
 use the `env -u` dev command above instead.
@@ -32,5 +38,5 @@ use the `env -u` dev command above instead.
 - Colors are CSS variables in `src/renderer/src/index.css` (`--color-*`, per theme). Raw Tailwind
   palette colors (e.g. `fuchsia-500`, `amber-400`) are used directly where a semantic token
   doesn't exist.
-</content>
-</invoke>
+
+When changes are done, reinstall the app

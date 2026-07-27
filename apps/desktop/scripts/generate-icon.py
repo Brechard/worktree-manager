@@ -19,6 +19,10 @@ from PIL import Image, ImageChops
 HERE = Path(__file__).resolve().parent
 SRC = HERE / "icon-src.png"
 OUT = HERE.parent / "resources" / "icon.png"
+# Pre-rounded variant used only for the Dev dock icon, which is drawn via
+# app.dock.setIcon() and therefore never gets macOS's own rounding mask.
+OUT_ROUNDED = HERE.parent / "resources" / "icon-rounded.png"
+ROUNDED_FOOTPRINT = 0.92
 
 SIZE = 1024          # master icon size
 SUPERSAMPLE = 4      # render the mask big, then downsample for clean anti-aliasing
@@ -102,16 +106,22 @@ def main() -> None:
     canvas = Image.new("RGBA", (SIZE, SIZE), navy)
     canvas.paste(logo, ((SIZE - logo.width) // 2, (SIZE - logo.height) // 2), logo)
 
-    if FULL_BLEED:
-        # Fully opaque edge-to-edge — macOS applies its own rounded mask.
-        detail = "full-bleed"
-    else:
-        canvas.putalpha(squircle_mask(SIZE, FOOTPRINT, EXPONENT))
-        detail = f"squircle n={EXPONENT} footprint={FOOTPRINT}"
-
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    canvas.save(OUT)
-    print(f"wrote {OUT} ({SIZE}x{SIZE}, {detail}, logo={LOGO_FRACTION}, navy={navy[:3]})")
+
+    # Primary icon: full-bleed opaque so macOS applies its own rounded mask.
+    primary = canvas
+    if not FULL_BLEED:
+        primary = canvas.copy()
+        primary.putalpha(squircle_mask(SIZE, FOOTPRINT, EXPONENT))
+    primary.save(OUT)
+    print(f"wrote {OUT} ({SIZE}x{SIZE}, {'full-bleed' if FULL_BLEED else 'squircle'}, "
+          f"logo={LOGO_FRACTION}, navy={navy[:3]})")
+
+    # Pre-rounded variant for the Dev dock icon (no OS mask is applied there).
+    rounded = canvas.copy()
+    rounded.putalpha(squircle_mask(SIZE, ROUNDED_FOOTPRINT, EXPONENT))
+    rounded.save(OUT_ROUNDED)
+    print(f"wrote {OUT_ROUNDED} (squircle n={EXPONENT}, footprint={ROUNDED_FOOTPRINT})")
 
 
 if __name__ == "__main__":

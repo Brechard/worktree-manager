@@ -39,6 +39,11 @@ const api = {
     repositories: Repository[]
   }): Promise<WorktreeStatusesResult> => ipcRenderer.invoke('get-worktree-statuses', args),
 
+  getWorktreeStatus: (args: {
+    worktree: Worktree
+    repository: Repository
+  }): Promise<WorktreeStatus> => ipcRenderer.invoke('get-worktree-status', args),
+
   getWorktreeDetails: (args: {
     worktree: Worktree
     repository: Repository
@@ -59,8 +64,7 @@ const api = {
     path: string
     filePath: string
     untracked?: boolean
-  }): Promise<{ success: boolean; output: string }> =>
-    ipcRenderer.invoke('discard-file', args),
+  }): Promise<{ success: boolean; output: string }> => ipcRenderer.invoke('discard-file', args),
 
   pullWorktree: (path: string): Promise<{ success: boolean; output: string }> =>
     ipcRenderer.invoke('pull-worktree', path),
@@ -70,6 +74,17 @@ const api = {
 
   pushWorktree: (path: string): Promise<{ success: boolean; output: string }> =>
     ipcRenderer.invoke('push-worktree', path),
+
+  checkoutBranch: (args: {
+    path: string
+    branch: string
+  }): Promise<{ success: boolean; output: string }> => ipcRenderer.invoke('checkout-branch', args),
+
+  mergeBranch: (args: {
+    path: string
+    branch: string
+    mode: 'merge' | 'no-ff' | 'squash' | 'rebase'
+  }): Promise<{ success: boolean; output: string }> => ipcRenderer.invoke('merge-branch', args),
 
   updateBaseBranch: (args: {
     path: string
@@ -95,7 +110,12 @@ const api = {
   }): Promise<{ success: boolean; error?: string }> => ipcRenderer.invoke('open-in-terminal', args),
   openInFileManager: (path: string): Promise<{ success: boolean; error?: string }> =>
     ipcRenderer.invoke('open-in-file-manager', path),
-  trashWorktree: (path: string): Promise<boolean> => ipcRenderer.invoke('trash-worktree', path),
+  removeWorktree: (args: {
+    path: string
+    repoPath: string
+    missing?: boolean
+  }): Promise<{ success: boolean; error?: string }> =>
+    ipcRenderer.invoke('remove-worktree', args),
   openExternal: (url: string): Promise<void> => ipcRenderer.invoke('open-external', url),
 
   encryptToken: (token: string): Promise<string> => ipcRenderer.invoke('encrypt-token', token),
@@ -111,6 +131,8 @@ const api = {
     ipcRenderer.invoke('get-repo-branches', path),
 
   getAppVersion: (): Promise<string> => ipcRenderer.invoke('get-app-version'),
+
+  isDev: (): Promise<boolean> => ipcRenderer.invoke('is-dev'),
 
   onScanProgress: (callback: (progress: ScanProgress) => void): (() => void) => {
     const listener = (_: unknown, progress: ScanProgress) => callback(progress)

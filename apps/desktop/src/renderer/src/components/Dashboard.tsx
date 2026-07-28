@@ -1,3 +1,4 @@
+import { useEffect, useMemo, useState } from 'react'
 import {
   RefreshCw,
   Settings as SettingsIcon,
@@ -23,12 +24,20 @@ import type {
 } from '@worktree/contracts'
 import { useAppStore } from '../store'
 import { useDashboard, defaultDirectionFor } from '../hooks/useDashboard'
+import { api } from '../api'
 import { WorktreeRow } from './WorktreeRow'
 import { ProjectConfigModal } from './ProjectConfigModal'
+import { EditorPicker } from './EditorPicker'
 import { TitleBar } from './TitleBar'
 import { BaseBranchStatus } from './BaseBranchStatus'
 import { cn } from '../lib/utils'
-import { EDITOR_OPTIONS, editorLabel, shortenPath } from '../lib/paths'
+import {
+  editorLabel,
+  editorOptionsForIds,
+  sortEditorOptions,
+  type EditorOption,
+  shortenPath,
+} from '../lib/paths'
 
 const SORT_MODES: { value: WorktreeSort; label: string }[] = [
   { value: 'activity', label: 'Recent activity' },
@@ -164,6 +173,8 @@ interface DashboardProjectHeaderProps {
   baseStatus: RepositoryBaseStatus | undefined
   baseBusy: boolean
   settings: AppSettings | null
+  editorOptions: EditorOption[]
+  editorIcons: Record<string, string>
   updateRepo: (id: string, patch: Partial<Repository>) => void
   setConfigRepoId: (value: string | null) => void
   loadStatuses: () => void
@@ -175,6 +186,8 @@ function DashboardProjectHeader({
   baseStatus,
   baseBusy,
   settings,
+  editorOptions,
+  editorIcons,
   updateRepo,
   setConfigRepoId,
   loadStatuses,
@@ -222,27 +235,18 @@ function DashboardProjectHeader({
       <div className="flex flex-wrap items-center gap-2">
         <label className="flex items-center gap-2 rounded-md border border-border bg-card px-2.5 py-1.5 text-xs">
           <span className="text-muted">Open with</span>
-          <div className="relative">
-            <select
-              value={selectedRepo.preferredEditor || ''}
-              onChange={(e) => {
-                const v = e.target.value
-                updateRepo(selectedRepo.id, {
-                  preferredEditor: v || undefined,
-                })
-              }}
-              className="appearance-none bg-transparent pr-5 font-medium outline-none"
-              title="Editor for this project"
-            >
-              <option value="">App default ({editorLabel(settings?.defaultEditor)})</option>
-              {EDITOR_OPTIONS.map((opt) => (
-                <option key={opt.id} value={opt.id}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
-            <ChevronDown className="pointer-events-none absolute right-0 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted" />
-          </div>
+          <EditorPicker
+            value={selectedRepo.preferredEditor || ''}
+            defaultOptionLabel={`App default (${editorLabel(settings?.defaultEditor)})`}
+            defaultEditorId={settings?.defaultEditor}
+            options={editorOptions}
+            editorIcons={editorIcons}
+            onChange={(value) => {
+              updateRepo(selectedRepo.id, {
+                preferredEditor: value || undefined,
+              })
+            }}
+          />
         </label>
 
         <button
@@ -467,6 +471,56 @@ function DashboardEmpty() {
 
 export function Dashboard() {
   const ctx = useDashboard()
+  const [availableEditorIds, setAvailableEditorIds] = useState<string[] | null>(null)
+  const [editorIcons, setEditorIcons] = useState<Record<string, string>>({})
+
+  useEffect(() => {
+    let cancelled = false
+    api
+      .getAvailableEditors()
+      .then((ids) => {
+        if (!cancelled) setAvailableEditorIds(ids)
+      })
+      .catch(() => {
+        if (!cancelled) setAvailableEditorIds(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const editorOptions = useMemo(
+    () =>
+      sortEditorOptions(
+        editorOptionsForIds(availableEditorIds, [
+          ctx.settings?.defaultEditor,
+          ctx.selectedRepo?.preferredEditor,
+        ])
+      ),
+    [availableEditorIds, ctx.settings?.defaultEditor, ctx.selectedRepo?.preferredEditor]
+  )
+
+  useEffect(() => {
+    const editorIds = editorOptions.map((option) => option.id)
+    if (editorIds.length === 0) {
+      setEditorIcons({})
+      return
+    }
+
+    let cancelled = false
+    api
+      .getEditorIcons(editorIds)
+      .then((icons) => {
+        if (!cancelled) setEditorIcons(icons)
+      })
+      .catch(() => {
+        if (!cancelled) setEditorIcons({})
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [editorOptions])
 
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
@@ -545,6 +599,8 @@ export function Dashboard() {
                 baseStatus={ctx.baseStatuses[ctx.selectedRepo.id]}
                 baseBusy={ctx.loading || ctx.baseUpdating}
                 settings={ctx.settings}
+                editorOptions={editorOptions}
+                editorIcons={editorIcons}
                 updateRepo={ctx.updateRepo}
                 setConfigRepoId={ctx.setConfigRepoId}
                 loadStatuses={() => {

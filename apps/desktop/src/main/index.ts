@@ -11,8 +11,8 @@ import {
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { existsSync } from 'node:fs'
-import { readFile, writeFile, mkdir, copyFile, stat } from 'node:fs/promises'
-import { homedir } from 'node:os'
+import { readFile, writeFile, mkdir, copyFile, stat, readdir, unlink } from 'node:fs/promises'
+import { homedir, tmpdir } from 'node:os'
 import { z } from 'zod'
 import {
   checkoutBranch,
@@ -249,21 +249,194 @@ function getIconPath(file = 'icon.png'): string | undefined {
 const EDITOR_LAUNCHERS: Record<string, { commands: string[]; macApp?: string }> = {
   cursor: { commands: ['cursor'], macApp: 'Cursor' },
   windsurf: { commands: ['windsurf'], macApp: 'Windsurf' },
+  trae: { commands: ['trae'], macApp: 'Trae' },
+  kiro: { commands: ['kiro'], macApp: 'Kiro' },
   code: { commands: ['code'], macApp: 'Visual Studio Code' },
   'code-insiders': { commands: ['code-insiders'], macApp: 'Visual Studio Code - Insiders' },
+  vscodium: { commands: ['codium'], macApp: 'VSCodium' },
   zed: { commands: ['zed', 'zeditor'], macApp: 'Zed' },
+  antigravity: { commands: ['agy'], macApp: 'Antigravity' },
   webstorm: { commands: ['webstorm'], macApp: 'WebStorm' },
   pycharm: { commands: ['pycharm'], macApp: 'PyCharm' },
   idea: { commands: ['idea'], macApp: 'IntelliJ IDEA' },
+  aqua: { commands: ['aqua'], macApp: 'Aqua' },
+  clion: { commands: ['clion'], macApp: 'CLion' },
+  datagrip: { commands: ['datagrip'], macApp: 'DataGrip' },
+  dataspell: { commands: ['dataspell'], macApp: 'DataSpell' },
   rider: { commands: ['rider'], macApp: 'Rider' },
   goland: { commands: ['goland'], macApp: 'GoLand' },
   phpstorm: { commands: ['phpstorm'], macApp: 'PhpStorm' },
   rubymine: { commands: ['rubymine'], macApp: 'RubyMine' },
+  rustrover: { commands: ['rustrover'], macApp: 'RustRover' },
   'android-studio': { commands: ['studio'], macApp: 'Android Studio' },
   xcode: { commands: ['xed'], macApp: 'Xcode' },
   sublime: { commands: ['subl'], macApp: 'Sublime Text' },
-  devin: { commands: ['devin'], macApp: 'Devin' },
+  devin: { commands: ['devin-desktop', 'devin'], macApp: 'Devin' },
   'file-manager': { commands: [] },
+}
+
+const MAC_APP_DIRS = [join('/Applications'), join(homedir(), 'Applications')]
+
+function findMacAppPath(appName: string): string | undefined {
+  for (const dir of MAC_APP_DIRS) {
+    const appPath = join(dir, `${appName}.app`)
+    if (existsSync(appPath)) return appPath
+  }
+  return undefined
+}
+
+function hasMacApp(appName: string): boolean {
+  return Boolean(findMacAppPath(appName))
+}
+
+async function commandExists(command: string): Promise<boolean> {
+  const probe = process.platform === 'win32' ? 'where' : 'which'
+  const result = await runCommand(probe, [command], {
+    timeout: 4000,
+    shell: process.platform === 'win32',
+  })
+  return result.exitCode === 0
+}
+
+async function isEditorAvailable(editorId: string): Promise<boolean> {
+  if (editorId === 'file-manager') return true
+
+  const launcher = EDITOR_LAUNCHERS[editorId]
+  if (!launcher) return false
+
+  if (process.platform === 'darwin' && launcher.macApp && hasMacApp(launcher.macApp)) {
+    return true
+  }
+
+  const commands = launcher.commands.length > 0 ? launcher.commands : [editorId]
+  for (const command of commands) {
+    if (await commandExists(command)) return true
+  }
+
+  return false
+}
+
+async function getAvailableEditors(): Promise<string[]> {
+  const editorIds = Object.keys(EDITOR_LAUNCHERS)
+  const checks = await Promise.all(editorIds.map((editorId) => isEditorAvailable(editorId)))
+  return editorIds.filter((_, index) => checks[index])
+}
+
+const editorIconCache = new Map<string, string | undefined>()
+
+async function resolveAppIconPngPath(appPath: string): Promise<string | undefined> {
+  const resourcesPath = join(appPath, 'Contents', 'Resources')
+  if (!existsSync(resourcesPath)) return undefined
+
+  const plistPath = join(appPath, 'Contents', 'Info.plist')
+  let iconFile: string | undefined
+
+  try {
+    const result = await runCommand('/usr/libexec/PlistBuddy', ['-c', 'Print CFBundleIconFile', plistPath], {
+      timeout: 4000,
+    })
+    if (result.exitCode === 0) {
+      const raw = result.stdout.trim()
+      if (raw) iconFile = raw
+    }
+  } catch {
+    // PlistBuddy may fail; fall through to filesystem search
+  }
+
+  if (iconFile) {
+    const candidates = [iconFile, `${iconFile}.icns`, `${iconFile}.png`]
+    for (const name of candidates) {
+      const candidate = join(resourcesPath, name)
+      if (existsSync(candidate)) return candidate
+    }
+  }
+
+  // Search Resources for any .icns file; common names first
+  const preferred = ['AppIcon', 'applet', 'icon']
+  const files = await readdir(resourcesPath).catch(() => [] as string[])
+  const icnsFiles = files.filter((f) => f.toLowerCase().endsWith('.icns'))
+  for (const p of preferred) {
+    const match = icnsFiles.find((f) => f.toLowerCase().startsWith(p.toLowerCase()))
+    if (match) return join(resourcesPath, match)
+  }
+  if (icnsFiles[0]) return join(resourcesPath, icnsFiles[0])
+
+  return undefined
+}
+
+async function getEditorIconDataUrl(editorId: string): Promise<string | undefined> {
+  if (process.platform !== 'darwin') return undefined
+
+  const cached = editorIconCache.get(editorId)
+  if (cached !== undefined) return cached
+
+  const appPath =
+    editorId === 'file-manager'
+      ? '/System/Library/CoreServices/Finder.app'
+      : EDITOR_LAUNCHERS[editorId]?.macApp
+        ? findMacAppPath(EDITOR_LAUNCHERS[editorId]!.macApp!)
+        : undefined
+
+  if (!appPath || !existsSync(appPath)) {
+    editorIconCache.set(editorId, undefined)
+    return undefined
+  }
+
+  let icon: Electron.NativeImage | undefined
+
+  try {
+    const iconFile = await resolveAppIconPngPath(appPath)
+
+    if (iconFile) {
+      if (iconFile.toLowerCase().endsWith('.png')) {
+        icon = nativeImage.createFromPath(iconFile)
+      } else if (iconFile.toLowerCase().endsWith('.icns')) {
+        const pngPath = join(tmpdir(), `worktree-icon-${editorId}.png`)
+        const result = await runCommand('/usr/bin/sips', ['-s', 'format', 'png', iconFile, '--out', pngPath], {
+          timeout: 5000,
+        })
+        if (result.exitCode === 0 && existsSync(pngPath)) {
+          icon = nativeImage.createFromPath(pngPath)
+          void unlink(pngPath).catch(() => { })
+        }
+      }
+    }
+
+    if (!icon || icon.isEmpty()) {
+      icon = await app.getFileIcon(appPath, { size: 'large' })
+    }
+
+    if (!icon || icon.isEmpty()) {
+      editorIconCache.set(editorId, undefined)
+      return undefined
+    }
+
+    const resized = icon.resize({ width: 32, height: 32, quality: 'best' })
+    const png = resized.toPNG()
+    const dataUrl = `data:image/png;base64,${png.toString('base64')}`
+    editorIconCache.set(editorId, dataUrl)
+    return dataUrl
+  } catch {
+    editorIconCache.set(editorId, undefined)
+    return undefined
+  }
+}
+
+async function getEditorIcons(editorIds: string[]): Promise<Record<string, string>> {
+  const icons: Record<string, string> = {}
+
+  const pairs = await Promise.all(
+    editorIds.map(async (editorId) => {
+      const iconDataUrl = await getEditorIconDataUrl(editorId)
+      return { editorId, iconDataUrl }
+    })
+  )
+
+  for (const { editorId, iconDataUrl } of pairs) {
+    if (iconDataUrl) icons[editorId] = iconDataUrl
+  }
+
+  return icons
 }
 
 async function createWindow() {
@@ -760,6 +933,8 @@ ipcMain.handle('parse-remote-provider', async (_, remoteUrl: string) => {
 
 ipcMain.handle('get-app-version', () => app.getVersion())
 ipcMain.handle('is-dev', () => isDev)
+ipcMain.handle('get-available-editors', async () => getAvailableEditors())
+ipcMain.handle('get-editor-icons', async (_, editorIds: string[]) => getEditorIcons(editorIds))
 
 ipcMain.handle('get-repo-branches', async (_, path: string) => {
   const [branches, defaultBranch] = await Promise.all([

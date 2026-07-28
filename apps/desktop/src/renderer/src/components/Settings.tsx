@@ -3,7 +3,13 @@ import { ArrowLeft, KeyRound, Loader2, Plus, X } from 'lucide-react'
 import { useAppStore } from '../store'
 import { api } from '../api'
 import { cn } from '../lib/utils'
-import { EDITOR_OPTIONS, TERMINAL_OPTIONS, shortenPath } from '../lib/paths'
+import {
+  editorOptionsForIds,
+  sortEditorOptions,
+  type EditorOption,
+  TERMINAL_OPTIONS,
+  shortenPath,
+} from '../lib/paths'
 import { applyTheme, type Theme } from '../lib/theme'
 import { TitleBar } from './TitleBar'
 
@@ -19,6 +25,7 @@ function useSettings() {
   const [detecting, setDetecting] = useState<'github' | 'azure' | null>(null)
   const [tokenMsg, setTokenMsg] = useState<string | null>(null)
   const [version, setVersion] = useState<string>('')
+  const [availableEditorIds, setAvailableEditorIds] = useState<string[] | null>(null)
 
   useEffect(() => {
     api
@@ -26,6 +33,23 @@ function useSettings() {
       .then(setVersion)
       .catch(() => { })
   }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    api
+      .getAvailableEditors()
+      .then((ids) => {
+        if (!cancelled) setAvailableEditorIds(ids)
+      })
+      .catch(() => {
+        if (!cancelled) setAvailableEditorIds(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const editorOptions = sortEditorOptions(editorOptionsForIds(availableEditorIds, [editor]))
 
   const previewTheme = (t: Theme) => {
     setTheme(t)
@@ -134,6 +158,7 @@ function useSettings() {
     detecting,
     detect,
     tokenMsg,
+    editorOptions,
     saving,
     save,
     version,
@@ -173,9 +198,11 @@ function AppearanceSection({
 function DefaultEditorSection({
   editor,
   setEditor,
+  editorOptions,
 }: {
   editor: string
   setEditor: (value: string) => void
+  editorOptions: EditorOption[]
 }) {
   return (
     <section>
@@ -193,7 +220,7 @@ function DefaultEditorSection({
         aria-label="Default editor"
         className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
       >
-        {EDITOR_OPTIONS.map((opt) => (
+        {editorOptions.map((opt) => (
           <option key={opt.id} value={opt.id}>
             {opt.label}
           </option>
@@ -418,7 +445,11 @@ function SettingsForm() {
       <div className="flex-1 overflow-auto p-6">
         <div className="mx-auto max-w-xl space-y-8">
           <AppearanceSection theme={s.theme} previewTheme={s.previewTheme} />
-          <DefaultEditorSection editor={s.editor} setEditor={s.setEditor} />
+          <DefaultEditorSection
+            editor={s.editor}
+            setEditor={s.setEditor}
+            editorOptions={s.editorOptions}
+          />
           <DefaultTerminalSection terminal={s.terminal} setTerminal={s.setTerminal} />
           <ProviderTokensSection
             githubToken={s.githubToken}

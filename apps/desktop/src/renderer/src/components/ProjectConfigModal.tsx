@@ -1,8 +1,9 @@
 import { useEffect, useReducer, useRef, useState, type ChangeEvent, type MouseEvent } from 'react'
 import { AlertTriangle, Image as ImageIcon, KeyRound, Loader2, Sparkles, X } from 'lucide-react'
 import type { ProviderConfig, Repository } from '@worktree/contracts'
+import { useAppStore } from '../store'
 import { api } from '../api'
-import { EDITOR_OPTIONS, editorLabel, shortenPath } from '../lib/paths'
+import { editorLabel, editorOptionsForIds, sortEditorOptions, shortenPath } from '../lib/paths'
 import { cn } from '../lib/utils'
 
 interface ProjectConfigModalProps {
@@ -45,11 +46,13 @@ function providerReducer(state: ProviderState, action: ProviderAction): Provider
 }
 
 export function ProjectConfigModal({ repository, onClose, onSave }: ProjectConfigModalProps) {
+  const settings = useAppStore((s) => s.settings)
   const [baseBranch, setBaseBranch] = useState(repository.baseBranch || 'main')
   const [branches, setBranches] = useState<string[]>([])
   const [defaultBranch, setDefaultBranch] = useState<string | undefined>(undefined)
   const [loadingBranches, setLoadingBranches] = useState(false)
   const [preferredEditor, setPreferredEditor] = useState(repository.preferredEditor ?? '')
+  const [availableEditorIds, setAvailableEditorIds] = useState<string[] | null>(null)
   const [favorite, setFavorite] = useState(Boolean(repository.favorite))
   const [provider, dispatchProvider] = useReducer(
     providerReducer,
@@ -61,6 +64,29 @@ export function ProjectConfigModal({ repository, onClose, onSave }: ProjectConfi
   const [autoNote, setAutoNote] = useState<string | null>(null)
   const [imageUrl, setImageUrl] = useState(repository.imageUrl ?? '')
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    api
+      .getAvailableEditors()
+      .then((ids) => {
+        if (!cancelled) setAvailableEditorIds(ids)
+      })
+      .catch(() => {
+        if (!cancelled) setAvailableEditorIds(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const editorOptions = sortEditorOptions(
+    editorOptionsForIds(availableEditorIds, [
+      preferredEditor,
+      repository.preferredEditor,
+      settings?.defaultEditor,
+    ])
+  )
 
   // Auto-fill from remote on open if missing
   useEffect(() => {
@@ -237,6 +263,7 @@ export function ProjectConfigModal({ repository, onClose, onSave }: ProjectConfi
               defaultBranch={defaultBranch}
               loadingBranches={loadingBranches}
               preferredEditor={preferredEditor}
+              editorOptions={editorOptions}
               setPreferredEditor={setPreferredEditor}
               favorite={favorite}
               setFavorite={setFavorite}
@@ -289,6 +316,7 @@ interface GeneralSectionProps {
   defaultBranch: string | undefined
   loadingBranches: boolean
   preferredEditor: string
+  editorOptions: ReturnType<typeof editorOptionsForIds>
   setPreferredEditor: (v: string) => void
   favorite: boolean
   setFavorite: (v: boolean) => void
@@ -305,6 +333,7 @@ function GeneralSection({
   defaultBranch,
   loadingBranches,
   preferredEditor,
+  editorOptions,
   setPreferredEditor,
   favorite,
   setFavorite,
@@ -367,7 +396,7 @@ function GeneralSection({
           className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
         >
           <option value="">App default</option>
-          {EDITOR_OPTIONS.map((opt) => (
+          {editorOptions.map((opt) => (
             <option key={opt.id} value={opt.id}>
               {opt.label}
             </option>

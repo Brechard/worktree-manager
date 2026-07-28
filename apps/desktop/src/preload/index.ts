@@ -153,6 +153,11 @@ const api = {
 
   isDev: (): Promise<boolean> => ipcRenderer.invoke('is-dev'),
 
+  getAvailableEditors: (): Promise<string[]> => ipcRenderer.invoke('get-available-editors'),
+
+  getEditorIcons: (editorIds: string[]): Promise<Record<string, string>> =>
+    ipcRenderer.invoke('get-editor-icons', editorIds),
+
   onScanProgress: (callback: (progress: ScanProgress) => void): (() => void) => {
     const listener = (_: unknown, progress: ScanProgress) => callback(progress)
     ipcRenderer.on('scan-progress', listener)

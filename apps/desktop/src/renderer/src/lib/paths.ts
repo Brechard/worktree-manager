@@ -13,6 +13,8 @@ export function shortenPath(path: string): string {
 export const EDITOR_OPTIONS = [
   { id: 'cursor', label: 'Cursor', command: 'cursor', macApp: 'Cursor' },
   { id: 'windsurf', label: 'Windsurf', command: 'windsurf', macApp: 'Windsurf' },
+  { id: 'trae', label: 'Trae', command: 'trae', macApp: 'Trae' },
+  { id: 'kiro', label: 'Kiro', command: 'kiro', macApp: 'Kiro' },
   { id: 'code', label: 'VS Code', command: 'code', macApp: 'Visual Studio Code' },
   {
     id: 'code-insiders',
@@ -20,7 +22,13 @@ export const EDITOR_OPTIONS = [
     command: 'code-insiders',
     macApp: 'Visual Studio Code - Insiders',
   },
+  { id: 'vscodium', label: 'VSCodium', command: 'codium', macApp: 'VSCodium' },
   { id: 'zed', label: 'Zed', command: 'zed', macApp: 'Zed' },
+  { id: 'antigravity', label: 'Antigravity', command: 'agy', macApp: 'Antigravity' },
+  { id: 'aqua', label: 'Aqua', command: 'aqua', macApp: 'Aqua' },
+  { id: 'clion', label: 'CLion', command: 'clion', macApp: 'CLion' },
+  { id: 'datagrip', label: 'DataGrip', command: 'datagrip', macApp: 'DataGrip' },
+  { id: 'dataspell', label: 'DataSpell', command: 'dataspell', macApp: 'DataSpell' },
   { id: 'webstorm', label: 'WebStorm', command: 'webstorm', macApp: 'WebStorm' },
   { id: 'pycharm', label: 'PyCharm', command: 'pycharm', macApp: 'PyCharm' },
   { id: 'idea', label: 'IntelliJ IDEA', command: 'idea', macApp: 'IntelliJ IDEA' },
@@ -28,6 +36,7 @@ export const EDITOR_OPTIONS = [
   { id: 'goland', label: 'GoLand', command: 'goland', macApp: 'GoLand' },
   { id: 'phpstorm', label: 'PhpStorm', command: 'phpstorm', macApp: 'PhpStorm' },
   { id: 'rubymine', label: 'RubyMine', command: 'rubymine', macApp: 'RubyMine' },
+  { id: 'rustrover', label: 'RustRover', command: 'rustrover', macApp: 'RustRover' },
   { id: 'android-studio', label: 'Android Studio', command: 'studio', macApp: 'Android Studio' },
   { id: 'xcode', label: 'Xcode', command: 'xed', macApp: 'Xcode' },
   { id: 'sublime', label: 'Sublime Text', command: 'subl', macApp: 'Sublime Text' },
@@ -36,10 +45,37 @@ export const EDITOR_OPTIONS = [
 ] as const
 
 export type EditorOptionId = (typeof EDITOR_OPTIONS)[number]['id']
+export type EditorOption = (typeof EDITOR_OPTIONS)[number]
 
 export function editorLabel(id: string | undefined | null): string {
   if (!id) return 'Default'
   return EDITOR_OPTIONS.find((e) => e.id === id)?.label ?? id
+}
+
+export function editorOptionsForIds(
+  availableIds: string[] | null,
+  keepIds: Array<string | undefined | null> = []
+): EditorOption[] {
+  if (!availableIds) return [...EDITOR_OPTIONS]
+
+  const allowed = new Set(availableIds)
+  for (const id of keepIds) {
+    if (id) allowed.add(id)
+  }
+
+  return EDITOR_OPTIONS.filter((option) => allowed.has(option.id))
+}
+
+export function sortEditorOptions(options: EditorOption[]): EditorOption[] {
+  const sorted = [...options].sort((a, b) => a.label.localeCompare(b.label))
+  const fileManagerIndex = sorted.findIndex((option) => option.id === 'file-manager')
+  if (fileManagerIndex <= -1) return sorted
+
+  const fileManager = sorted[fileManagerIndex]
+  if (!fileManager) return sorted
+  sorted.splice(fileManagerIndex, 1)
+  sorted.push(fileManager)
+  return sorted
 }
 
 export const TERMINAL_OPTIONS = [

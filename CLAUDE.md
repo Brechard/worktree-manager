@@ -12,6 +12,7 @@ stripped: prefix commands with `env -u ELECTRON_RUN_AS_NODE`.
 
 - Typecheck everything: `npm run typecheck`
 - Build everything: `npm run build`
+- Package macOS release (arm64 only): `cd apps/desktop && npm run dist`
 - Dev (hot-reload renderer + main): `cd apps/desktop && env -u ELECTRON_RUN_AS_NODE npx electron-vite dev`
 - Run the built app: `cd apps/desktop && env -u ELECTRON_RUN_AS_NODE node_modules/electron/dist/Electron.app/Contents/MacOS/Electron dist-electron/main/index.cjs`
 - Screenshot the running app (macOS): focus its window, then `screencapture -o -x /tmp/shot.png`
@@ -39,4 +40,4 @@ use the `env -u` dev command above instead.
   palette colors (e.g. `fuchsia-500`, `amber-400`) are used directly where a semantic token
   doesn't exist.
 
-When changes are done, reinstall the app
+When changes are done, reinstall the app (in mac the arm version)

@@ -102,10 +102,14 @@ export function useDashboard(): UseDashboardReturn {
   const refreshSeq = useRef(new Map<string, number>())
 
   const loadStatuses = useCallback(async () => {
-    if (worktrees.length === 0) return
+    const current = useAppStore.getState()
+    if (current.worktrees.length === 0) return
     setLoading(true)
     try {
-      const result = await api.getWorktreeStatuses({ worktrees, repositories })
+      const result = await api.getWorktreeStatuses({
+        worktrees: current.worktrees,
+        repositories: current.repositories,
+      })
       setStatuses(result.statuses)
       const nextBase: Record<string, RepositoryBaseStatus> = {}
       for (const status of result.baseStatuses) {
@@ -116,7 +120,7 @@ export function useDashboard(): UseDashboardReturn {
       setLoading(false)
       setStatusProgress(null)
     }
-  }, [repositories, setLoading, setStatuses, setBaseStatuses, setStatusProgress, worktrees])
+  }, [setLoading, setStatuses, setBaseStatuses, setStatusProgress])
 
   const refreshWorktreeStatus = useCallback(
     async (worktree: Worktree, isCancelled?: () => boolean) => {
@@ -232,9 +236,13 @@ export function useDashboard(): UseDashboardReturn {
     if (worktrees.length === 0) return
     let cancelled = false
     const run = async () => {
+      const current = useAppStore.getState()
       setLoading(true)
       try {
-        const result = await api.getWorktreeStatuses({ worktrees, repositories })
+        const result = await api.getWorktreeStatuses({
+          worktrees: current.worktrees,
+          repositories: current.repositories,
+        })
         if (cancelled) return
         setStatuses(result.statuses)
         const nextBase: Record<string, RepositoryBaseStatus> = {}
@@ -251,7 +259,7 @@ export function useDashboard(): UseDashboardReturn {
     return () => {
       cancelled = true
     }
-  }, [repositories, setBaseStatuses, setLoading, setStatuses, setStatusProgress, worktrees])
+  }, [worktrees, setBaseStatuses, setLoading, setStatuses, setStatusProgress])
 
   const rescan = useCallback(async () => {
     if (scanning || loading) return

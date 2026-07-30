@@ -6,6 +6,7 @@ import { useAppStore } from '../store'
 import { cn } from '../lib/utils'
 import { shortenPath } from '../lib/paths'
 import { TitleBar } from './TitleBar'
+import { Loading } from './Loading'
 
 export function Onboarding() {
   const [roots, setRoots] = useState<string[]>([])
@@ -172,14 +173,11 @@ export function Onboarding() {
           </div>
 
           {scanning && scanProgress && (
-            <div className="mb-6 rounded-md border border-border bg-background p-4">
-              <div className="mb-2 flex items-center gap-2 text-sm text-muted">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                Scanning… {scanProgress.current} dirs · found {scanProgress.found}
-              </div>
-              <p className="truncate font-mono text-xs text-muted">
-                {scanProgress.currentPath ? shortenPath(scanProgress.currentPath) : '…'}
-              </p>
+            <div className="mb-6 flex justify-center">
+              <Loading
+                message="Scanning…"
+                subMessage={`${scanProgress.found} found · ${scanProgress.current} folders`}
+              />
             </div>
           )}
 

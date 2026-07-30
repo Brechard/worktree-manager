@@ -8,7 +8,6 @@ import {
   SlidersHorizontal,
   Star,
   ChevronDown,
-  Loader2,
   ArrowDownUp,
   Clock3,
   ShieldCheck,
@@ -590,17 +589,14 @@ export function Dashboard() {
         <main className="relative flex min-w-0 flex-1 flex-col">
           {ctx.scanning && (
             <div className="pointer-events-none absolute inset-x-0 bottom-4 z-20 flex flex-col items-center gap-2 px-4">
-              <div className="pointer-events-auto flex max-w-full items-center gap-2 rounded-full border border-border bg-card/95 px-3.5 py-2 text-xs text-muted shadow-lg backdrop-blur">
-                <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
-                <span className="truncate">
-                  {ctx.scanProgress
-                    ? `Scanning… ${ctx.scanProgress.found} found · ${ctx.scanProgress.current} folders${ctx.scanProgress.currentPath
-                      ? ` · ${shortenPath(ctx.scanProgress.currentPath)}`
-                      : ''
-                    }`
-                    : 'Scanning folders…'}
-                </span>
-              </div>
+              <Loading
+                message="Scanning…"
+                subMessage={
+                  ctx.scanProgress
+                    ? `${ctx.scanProgress.found} found · ${ctx.scanProgress.current} folders`
+                    : undefined
+                }
+              />
             </div>
           )}
           {ctx.selectedRepo ? (

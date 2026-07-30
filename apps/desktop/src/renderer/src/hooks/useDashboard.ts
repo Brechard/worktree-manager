@@ -325,7 +325,6 @@ export function useDashboard(): UseDashboardReturn {
       setScanProgress(null)
       setLoading(false)
     }
-    await loadStatuses()
   }, [
     loading,
     scanning,
@@ -338,7 +337,6 @@ export function useDashboard(): UseDashboardReturn {
     setScanProgress,
     setActionError,
     setLoading,
-    loadStatuses,
   ])
 
   const persistRepos = useCallback(

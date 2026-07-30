@@ -1,5 +1,6 @@
 import { readdir, stat, readFile, readlink } from 'node:fs/promises'
 import type { Dirent } from 'node:fs'
+import { homedir } from 'node:os'
 import { basename, join, dirname, isAbsolute, resolve, extname, relative } from 'node:path'
 import type { Repository, Worktree } from '@worktree/contracts'
 import {
@@ -42,6 +43,18 @@ const SKIP_DIRS = new Set([
   '.expo',
   '.cache',
 ])
+
+function normalizeExcluded(path: string): string | undefined {
+  if (!path) return undefined
+  let p = path
+  if (p.startsWith('~/')) p = join(homedir(), p.slice(2))
+  try {
+    p = resolve(p)
+  } catch {
+    return undefined
+  }
+  return p.replace(/\/+$/, '')
+}
 
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024
 const IMAGE_DIR_CANDIDATES = [
@@ -229,6 +242,7 @@ export async function detectProjectImage(repoPath: string): Promise<string | und
 export interface DiscoverOptions {
   roots: string[]
   maxDepth?: number
+  excludedPaths?: string[]
   onProgress?: (progress: {
     total: number
     current: number
@@ -241,7 +255,8 @@ export interface DiscoverOptions {
 export async function discoverRepositories(
   options: DiscoverOptions
 ): Promise<{ repositories: Repository[]; worktrees: Worktree[] }> {
-  const { roots, maxDepth = 5, onProgress, shouldCancel } = options
+  const { roots, maxDepth = 5, excludedPaths = [], onProgress, shouldCancel } = options
+  const excluded = excludedPaths.map(normalizeExcluded).filter(Boolean) as string[]
   const foundDirs: string[] = []
   const mainRepoPaths = new Map<string, string>() // repo root -> one discovered path
 
@@ -299,6 +314,7 @@ export async function discoverRepositories(
   // stat per directory and lets us stop before descending into the repo.
   const visit = async (dir: string, depth: number): Promise<void> => {
     if (shouldCancel?.() || depth > maxDepth) return
+    if (excluded.some((p) => dir === p || dir.startsWith(p + '/'))) return
     await acquire()
     let entries
     try {

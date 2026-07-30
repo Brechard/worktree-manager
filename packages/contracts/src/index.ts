@@ -156,6 +156,13 @@ export type ScanResult = z.infer<typeof scanResultSchema>
 
 export const appSettingsSchema = z.object({
   watchedDirectories: z.array(z.string()).default([]),
+  excludedPaths: z
+    .array(z.string())
+    .default([
+      '~/.claude/plugins/cache',
+      '~/.codex/plugins/cache',
+      '~/.devin/plugins/cache',
+    ]),
   defaultEditor: z.string().default('cursor'),
   defaultTerminal: z.string().optional(),
   theme: z.enum(['system', 'light', 'dark']).default('system'),

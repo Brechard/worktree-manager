@@ -87,6 +87,7 @@ export function Onboarding() {
 
     const nextSettings = {
       watchedDirectories: Array.from(new Set([...(settings?.watchedDirectories ?? []), ...roots])),
+      excludedPaths: settings?.excludedPaths ?? [],
       defaultEditor: settings?.defaultEditor ?? 'cursor',
       theme: settings?.theme ?? 'system',
       ...(settings?.defaultTerminal ? { defaultTerminal: settings.defaultTerminal } : {}),

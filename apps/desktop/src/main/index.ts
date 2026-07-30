@@ -526,10 +526,12 @@ ipcMain.handle(
     }
 
     const roots = dedupeRoots([...(options.roots ?? []), ...getAiAgentRoots()])
+    const settings = await loadSettings()
 
     const result = await discoverRepositories({
       roots,
       maxDepth: options.maxDepth ?? 5,
+      excludedPaths: settings.excludedPaths,
       onProgress,
       shouldCancel: () => cancelScan,
     })

@@ -19,6 +19,7 @@ function useSettings() {
   const [terminal, setTerminal] = useState(settings?.defaultTerminal ?? '')
   const [theme, setTheme] = useState<Theme>(settings?.theme ?? 'system')
   const [dirs, setDirs] = useState<string[]>(settings?.watchedDirectories ?? [])
+  const [excluded, setExcluded] = useState<string[]>(settings?.excludedPaths ?? [])
   const [githubToken, setGithubToken] = useState(settings?.githubToken ?? '')
   const [azureToken, setAzureToken] = useState(settings?.azureToken ?? '')
   const [saving, setSaving] = useState(false)
@@ -65,6 +66,15 @@ function useSettings() {
     setDirs((prev) => prev.filter((_, idx) => idx !== i))
   }
 
+  const addExcluded = async () => {
+    const paths = await api.openDirectoryDialog()
+    if (paths.length) setExcluded((prev) => Array.from(new Set([...prev, ...paths])))
+  }
+
+  const removeExcluded = (i: number) => {
+    setExcluded((prev) => prev.filter((_, idx) => idx !== i))
+  }
+
   const detect = async (provider: 'github' | 'azure') => {
     setDetecting(provider)
     setTokenMsg(null)
@@ -88,6 +98,7 @@ function useSettings() {
 
   const nextSettings = () => ({
     watchedDirectories: dirs,
+    excludedPaths: excluded,
     defaultEditor: editor,
     theme,
     ...(terminal ? { defaultTerminal: terminal } : {}),
@@ -101,6 +112,7 @@ function useSettings() {
     const current = nextSettings()
     const prev = {
       watchedDirectories: settings?.watchedDirectories ?? [],
+      excludedPaths: settings?.excludedPaths ?? [],
       defaultEditor: settings?.defaultEditor ?? 'cursor',
       theme: settings?.theme ?? 'system',
       defaultTerminal: settings?.defaultTerminal ?? '',
@@ -110,8 +122,16 @@ function useSettings() {
       worktreeSortDirection: settings?.worktreeSortDirection ?? 'desc',
     }
     return (
-      JSON.stringify({ ...current, watchedDirectories: [...current.watchedDirectories].sort() }) !==
-      JSON.stringify({ ...prev, watchedDirectories: [...prev.watchedDirectories].sort() })
+      JSON.stringify({
+        ...current,
+        watchedDirectories: [...current.watchedDirectories].sort(),
+        excludedPaths: [...current.excludedPaths].sort(),
+      }) !==
+      JSON.stringify({
+        ...prev,
+        watchedDirectories: [...prev.watchedDirectories].sort(),
+        excludedPaths: [...prev.excludedPaths].sort(),
+      })
     )
   }
 
@@ -151,6 +171,9 @@ function useSettings() {
     dirs,
     addDir,
     removeDir,
+    excluded,
+    addExcluded,
+    removeExcluded,
     githubToken,
     setGithubToken,
     azureToken,
@@ -399,6 +422,63 @@ function WatchedDirectoriesSection({
   )
 }
 
+function ExcludedPathsSection({
+  excluded,
+  addExcluded,
+  removeExcluded,
+}: {
+  excluded: string[]
+  addExcluded: () => void
+  removeExcluded: (i: number) => void
+}) {
+  return (
+    <section>
+      <div className="mb-3 flex items-center justify-between">
+        <div>
+          <h2 className="text-xs font-semibold uppercase tracking-wider text-muted">
+            Excluded folders
+          </h2>
+          <p className="mt-1 text-xs text-muted">
+            These paths are skipped when discovering worktrees.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={addExcluded}
+          className="inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1.5 text-xs font-medium text-primary-foreground hover:opacity-90"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Add folder
+        </button>
+      </div>
+      {excluded.length === 0 ? (
+        <p className="text-sm text-muted">No excluded folders.</p>
+      ) : (
+        <ul className="space-y-2">
+          {excluded.map((dir, i) => (
+            <li
+              key={dir}
+              className="flex items-center justify-between rounded-md border border-border bg-card px-3 py-2 text-sm"
+            >
+              <span className="truncate font-mono text-xs" title={dir}>
+                {shortenPath(dir)}
+              </span>
+              <button
+                type="button"
+                onClick={() => removeExcluded(i)}
+                aria-label="Remove excluded folder"
+                className="ml-2 text-muted hover:text-destructive"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  )
+}
+
 function SettingsFooter({
   saving,
   save,
@@ -461,6 +541,11 @@ function SettingsForm() {
             tokenMsg={s.tokenMsg}
           />
           <WatchedDirectoriesSection dirs={s.dirs} addDir={s.addDir} removeDir={s.removeDir} />
+          <ExcludedPathsSection
+            excluded={s.excluded}
+            addExcluded={s.addExcluded}
+            removeExcluded={s.removeExcluded}
+          />
         </div>
       </div>
 

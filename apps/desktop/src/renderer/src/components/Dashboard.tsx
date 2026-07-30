@@ -588,7 +588,7 @@ export function Dashboard() {
 
         <main className="relative flex min-w-0 flex-1 flex-col">
           {ctx.scanning && (
-            <div className="pointer-events-none absolute inset-x-0 bottom-4 z-20 flex flex-col items-center gap-2 px-4">
+            <div className="pointer-events-none absolute inset-x-0 top-3 z-20 flex flex-col items-center gap-2 px-4">
               <Loading
                 message="Scanning…"
                 subMessage={

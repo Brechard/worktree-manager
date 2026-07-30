@@ -402,9 +402,9 @@ async function getEditorIconDataUrl(editorId: string): Promise<string | undefine
       }
     }
 
-    if (!icon || icon.isEmpty()) {
-      icon = await app.getFileIcon(appPath, { size: 'large' })
-    }
+    // Note: no app.getFileIcon() fallback here — it crashes natively on
+    // macOS 26 (Tahoe) for .app bundles (EXC_BREAKPOINT, exit 133), and a
+    // native CHECK failure can't be caught from JS.
 
     if (!icon || icon.isEmpty()) {
       editorIconCache.set(editorId, undefined)
@@ -555,49 +555,23 @@ function statusCwd(repository: Repository, worktrees: Worktree[]): string {
   )
 }
 
-async function refreshRepositoryBaseStatuses(
-  repositories: Repository[],
-  worktrees: Worktree[]
-): Promise<{
-  snapshots: Map<string, BaseBranchSnapshot>
-  statuses: RepositoryBaseStatus[]
-}> {
-  const worktreeRepositoryIds = new Set(worktrees.map((worktree) => worktree.repositoryId))
-  const relevantRepositories = repositories.filter((repository) =>
-    worktreeRepositoryIds.has(repository.id)
-  )
-  const snapshots = new Map<string, BaseBranchSnapshot>()
-  const statuses: (RepositoryBaseStatus | undefined)[] = new Array(
-    relevantRepositories.length
-  ).fill(undefined)
-  let cursor = 0
-
-  // One fetch per repository, rather than one fetch per worktree. Keep a small
-  // bound so opening a large workspace does not start dozens of network calls.
-  const CONCURRENCY = 4
-  const worker = async () => {
-    while (cursor < relevantRepositories.length) {
-      const index = cursor++
-      const repository = relevantRepositories[index]!
-      const snapshot = await refreshBaseBranch(
-        statusCwd(repository, worktrees),
-        repository.baseBranch || 'main'
-      )
-      snapshots.set(repository.id, snapshot)
-      statuses[index] = toRepositoryBaseStatus(repository, snapshot)
-    }
-  }
-
-  await Promise.all(
-    Array.from(
-      { length: Math.min(CONCURRENCY, relevantRepositories.length) },
-      () => worker()
-    )
-  )
-
+function createSemaphore(concurrency: number) {
+  let inFlight = 0
+  const queue: (() => void)[] = []
   return {
-    snapshots,
-    statuses: statuses.filter((status): status is RepositoryBaseStatus => status !== undefined),
+    acquire: async () => {
+      if (inFlight < concurrency) {
+        inFlight++
+        return
+      }
+      await new Promise<void>((resolve) => queue.push(resolve))
+      inFlight++
+    },
+    release: () => {
+      inFlight--
+      const next = queue.shift()
+      if (next) next()
+    },
   }
 }
 
@@ -616,9 +590,52 @@ ipcMain.handle(
     const emitProgress = () => event.sender.send('status-progress', { current: done, total })
     emitProgress()
 
-    const { snapshots: baseSnapshots, statuses: baseStatuses } =
-      await refreshRepositoryBaseStatuses(args.repositories, args.worktrees)
     const repositoriesById = new Map(args.repositories.map((repository) => [repository.id, repository]))
+
+    // Start base-branch fetches per repository in parallel with the per-worktree
+    // status calls. Each worktree waits only for its own repository's base snapshot
+    // so repos that finish base fetching first start their worktree statuses sooner.
+    const worktreeRepositoryIds = new Set(args.worktrees.map((worktree) => worktree.repositoryId))
+    const relevantRepositories = args.repositories.filter((repository) =>
+      worktreeRepositoryIds.has(repository.id)
+    )
+    const baseSnapshots = new Map<string, BaseBranchSnapshot>()
+    const baseStatuses: RepositoryBaseStatus[] = []
+    const basePromises = new Map<string, Promise<BaseBranchSnapshot | undefined>>()
+    const repoCount = relevantRepositories.length
+    let baseDone = 0
+    const emitBaseProgress = () =>
+      event.sender.send('base-status-progress', { current: baseDone, total: repoCount })
+    emitBaseProgress()
+    const baseSemaphore = createSemaphore(4)
+
+    for (const repository of relevantRepositories) {
+      const promise = (async () => {
+        await baseSemaphore.acquire()
+        try {
+          return await refreshBaseBranch(
+            statusCwd(repository, args.worktrees),
+            repository.baseBranch || 'main'
+          )
+        } finally {
+          baseSemaphore.release()
+        }
+      })()
+        .then((snapshot) => {
+          baseSnapshots.set(repository.id, snapshot)
+          baseStatuses.push(toRepositoryBaseStatus(repository, snapshot))
+          baseDone++
+          emitBaseProgress()
+          return snapshot
+        })
+        .catch((error) => {
+          baseDone++
+          emitBaseProgress()
+          console.error('[worktree] refreshBaseBranch failed:', repository.path, error)
+          return undefined
+        })
+      basePromises.set(repository.id, promise)
+    }
 
     // Fetch statuses with bounded concurrency — each does git + a network PR
     // lookup, so a few in flight is much faster than one at a time, while
@@ -632,7 +649,7 @@ ipcMain.handle(
         const worktree = args.worktrees[i]!
         const repo = repositoriesById.get(worktree.repositoryId)
         if (repo) {
-          const baseSnapshot = baseSnapshots.get(repo.id)
+          const baseSnapshot = await basePromises.get(worktree.repositoryId)
           results[i] = await getWorktreeStatus({
             worktree,
             repository: repo,

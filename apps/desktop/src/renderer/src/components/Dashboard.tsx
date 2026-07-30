@@ -27,6 +27,7 @@ import { useDashboard, defaultDirectionFor } from '../hooks/useDashboard'
 import { api } from '../api'
 import { WorktreeRow } from './WorktreeRow'
 import { ProjectConfigModal } from './ProjectConfigModal'
+import { Loading } from './Loading'
 import { EditorPicker } from './EditorPicker'
 import { TitleBar } from './TitleBar'
 import { BaseBranchStatus } from './BaseBranchStatus'
@@ -358,6 +359,7 @@ function DashboardControls({
 interface DashboardWorktreeListProps {
   loading: boolean
   statusProgress: { current: number; total: number } | null
+  baseStatusProgress: { current: number; total: number } | null
   worktreeSections: ReturnType<typeof import('../lib/worktreeSorting').groupWorktrees>
   repoWorktrees: Worktree[]
   statuses: Record<string, WorktreeStatus>
@@ -374,6 +376,7 @@ interface DashboardWorktreeListProps {
 function DashboardWorktreeList({
   loading,
   statusProgress,
+  baseStatusProgress,
   worktreeSections,
   repoWorktrees,
   statuses,
@@ -389,15 +392,23 @@ function DashboardWorktreeList({
   return (
     <div className="relative flex-1 overflow-hidden">
       {loading && (
-        <div className="pointer-events-none absolute inset-x-0 top-3 z-20 flex justify-center px-4">
-          <div className="pointer-events-auto flex items-center gap-2 rounded-full border border-warning/50 bg-warning/20 px-3.5 py-2 text-xs font-semibold text-warning shadow-lg backdrop-blur">
-            <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
-            <span className="truncate">
-              {statusProgress && statusProgress.total > 0
-                ? `Fetching worktree statuses… ${statusProgress.current}/${statusProgress.total}`
-                : 'Fetching worktree statuses…'}
-            </span>
-          </div>
+        <div className="pointer-events-none absolute inset-x-0 top-3 z-20 flex flex-col items-center gap-2 px-4">
+          <Loading
+            message="Fetching base branches…"
+            subMessage={
+              baseStatusProgress && baseStatusProgress.total > 0
+                ? `${baseStatusProgress.current}/${baseStatusProgress.total}`
+                : undefined
+            }
+          />
+          <Loading
+            message="Fetching worktree statuses…"
+            subMessage={
+              statusProgress && statusProgress.total > 0
+                ? `${statusProgress.current}/${statusProgress.total}`
+                : undefined
+            }
+          />
         </div>
       )}
       <div className="h-full overflow-auto p-4">
@@ -620,6 +631,7 @@ export function Dashboard() {
               <DashboardWorktreeList
                 loading={ctx.loading}
                 statusProgress={ctx.statusProgress}
+                baseStatusProgress={ctx.baseStatusProgress}
                 worktreeSections={ctx.worktreeSections}
                 repoWorktrees={ctx.repoWorktrees}
                 statuses={ctx.statuses}

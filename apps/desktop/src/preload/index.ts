@@ -172,6 +172,15 @@ const api = {
     ipcRenderer.on('status-progress', listener)
     return () => ipcRenderer.removeListener('status-progress', listener)
   },
+
+  onBaseStatusProgress: (
+    callback: (progress: { current: number; total: number }) => void
+  ): (() => void) => {
+    const listener = (_: unknown, progress: { current: number; total: number }) =>
+      callback(progress)
+    ipcRenderer.on('base-status-progress', listener)
+    return () => ipcRenderer.removeListener('base-status-progress', listener)
+  },
 }
 
 contextBridge.exposeInMainWorld('api', api)

@@ -24,6 +24,7 @@ export interface UseDashboardReturn {
   statuses: Record<string, WorktreeStatus>
   scanProgress: ScanProgress | null
   statusProgress: { current: number; total: number } | null
+  baseStatusProgress: { current: number; total: number } | null
   loading: boolean
   scanning: boolean
   refreshingIds: Set<string>
@@ -95,6 +96,10 @@ export function useDashboard(): UseDashboardReturn {
   const [statusProgress, setStatusProgress] = useState<{ current: number; total: number } | null>(
     null
   )
+  const [baseStatusProgress, setBaseStatusProgress] = useState<{
+    current: number
+    total: number
+  } | null>(null)
   const [refreshingIds, setRefreshingIds] = useState<Set<string>>(new Set())
   const [baseStatuses, setBaseStatuses] = useState<Record<string, RepositoryBaseStatus>>({})
   const [baseUpdating, setBaseUpdating] = useState(false)
@@ -105,6 +110,8 @@ export function useDashboard(): UseDashboardReturn {
     const current = useAppStore.getState()
     if (current.worktrees.length === 0) return
     setLoading(true)
+    setBaseStatusProgress(null)
+    setStatusProgress(null)
     try {
       const result = await api.getWorktreeStatuses({
         worktrees: current.worktrees,
@@ -119,8 +126,9 @@ export function useDashboard(): UseDashboardReturn {
     } finally {
       setLoading(false)
       setStatusProgress(null)
+      setBaseStatusProgress(null)
     }
-  }, [setLoading, setStatuses, setBaseStatuses, setStatusProgress])
+  }, [setLoading, setStatuses, setBaseStatuses, setStatusProgress, setBaseStatusProgress])
 
   const refreshWorktreeStatus = useCallback(
     async (worktree: Worktree, isCancelled?: () => boolean) => {
@@ -229,6 +237,11 @@ export function useDashboard(): UseDashboardReturn {
 
   useEffect(() => {
     const remove = api.onStatusProgress((progress) => setStatusProgress(progress))
+    return remove
+  }, [])
+
+  useEffect(() => {
+    const remove = api.onBaseStatusProgress((progress) => setBaseStatusProgress(progress))
     return remove
   }, [])
 
@@ -570,6 +583,7 @@ export function useDashboard(): UseDashboardReturn {
     statuses,
     scanProgress,
     statusProgress,
+    baseStatusProgress,
     loading,
     scanning,
     refreshingIds,

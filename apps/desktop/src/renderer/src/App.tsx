@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
-import type { Repository, Worktree } from '@worktree/contracts'
+import type { Repository, ScanProgress, Worktree } from '@worktree/contracts'
 import { useAppStore } from './store'
 import { api } from './api'
 import { Onboarding } from './components/Onboarding'
 import { Dashboard } from './components/Dashboard'
+import { Loading } from './components/Loading'
 import { Settings } from './components/Settings'
 import { TitleBar } from './components/TitleBar'
 import { applyTheme } from './lib/theme'
@@ -13,9 +14,12 @@ export default function App() {
     useAppStore()
   const [bootError, setBootError] = useState<string | null>(null)
   const [ready, setReady] = useState(false)
+  const [scanning, setScanning] = useState(false)
+  const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null)
 
   useEffect(() => {
     let cancelled = false
+    let removeScanProgress: (() => void) | undefined
     async function init() {
       try {
         if (!window.api) {
@@ -42,39 +46,47 @@ export default function App() {
         }
 
         if (roots.size > 0) {
-          const result = await api.discoverWorktrees({ roots: Array.from(roots), maxDepth: 5 })
-          if (!result.cancelled) {
-            const existingByPath = new Map(existingRepos.map((r) => [r.path, r]))
-            const existingById = new Map(existingRepos.map((r) => [r.id, r]))
-            const mergedRepos: Repository[] = []
-            for (const r of result.repositories) {
-              const prev = existingByPath.get(r.path) || existingById.get(r.id)
-              if (!prev) {
-                mergedRepos.push(r)
-                continue
+          removeScanProgress = api.onScanProgress((progress) => setScanProgress(progress))
+          setScanning(true)
+          try {
+            const result = await api.discoverWorktrees({ roots: Array.from(roots), maxDepth: 5 })
+            if (!result.cancelled) {
+              const existingByPath = new Map(existingRepos.map((r) => [r.path, r]))
+              const existingById = new Map(existingRepos.map((r) => [r.id, r]))
+              const mergedRepos: Repository[] = []
+              for (const r of result.repositories) {
+                const prev = existingByPath.get(r.path) || existingById.get(r.id)
+                if (!prev) {
+                  mergedRepos.push(r)
+                  continue
+                }
+                mergedRepos.push({
+                  ...r,
+                  favorite: prev.favorite ?? r.favorite,
+                  preferredEditor: prev.preferredEditor ?? r.preferredEditor,
+                  imageUrl: prev.imageUrl ?? r.imageUrl,
+                  baseBranch: r.baseBranch || prev.baseBranch,
+                  provider: prev.provider?.personalAccessToken
+                    ? prev.provider
+                    : (r.provider ?? prev.provider),
+                })
               }
-              mergedRepos.push({
-                ...r,
-                favorite: prev.favorite ?? r.favorite,
-                preferredEditor: prev.preferredEditor ?? r.preferredEditor,
-                imageUrl: prev.imageUrl ?? r.imageUrl,
-                baseBranch: r.baseBranch || prev.baseBranch,
-                provider: prev.provider?.personalAccessToken
-                  ? prev.provider
-                  : (r.provider ?? prev.provider),
-              })
-            }
 
-            const kept: Worktree[] = []
-            for (const w of existingWorktrees) {
-              if (!result.repositories.some((r) => r.id === w.repositoryId)) {
-                kept.push(w)
+              const kept: Worktree[] = []
+              for (const w of existingWorktrees) {
+                if (!result.repositories.some((r) => r.id === w.repositoryId)) {
+                  kept.push(w)
+                }
               }
-            }
 
-            repositories = mergedRepos
-            worktrees = [...kept, ...result.worktrees]
-            await Promise.all([api.setRepositories(repositories), api.setWorktrees(worktrees)])
+              repositories = mergedRepos
+              worktrees = [...kept, ...result.worktrees]
+              await Promise.all([api.setRepositories(repositories), api.setWorktrees(worktrees)])
+            }
+          } finally {
+            setScanning(false)
+            removeScanProgress?.()
+            removeScanProgress = undefined
           }
         }
 
@@ -103,6 +115,7 @@ export default function App() {
     init()
     return () => {
       cancelled = true
+      removeScanProgress?.()
     }
   }, [setSettings, setRepositories, setWorktrees, setView, setSelectedRepositoryId])
 
@@ -122,7 +135,16 @@ export default function App() {
     return (
       <div className="flex h-screen w-screen flex-col overflow-hidden bg-background text-foreground">
         <TitleBar title="Worktree Manager" />
-        <div className="flex flex-1 items-center justify-center text-sm text-muted">Loading…</div>
+        <div className="flex flex-1 items-center justify-center">
+          <Loading
+            message={scanning ? 'Scanning…' : 'Loading…'}
+            subMessage={
+              scanning && scanProgress
+                ? `${scanProgress.found} found · ${scanProgress.current} folders`
+                : undefined
+            }
+          />
+        </div>
       </div>
     )
   }

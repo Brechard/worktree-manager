@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import type { Repository, Worktree } from '@worktree/contracts'
 import { useAppStore } from './store'
 import { api } from './api'
 import { Onboarding } from './components/Onboarding'
@@ -20,7 +21,7 @@ export default function App() {
         if (!window.api) {
           throw new Error('Electron API is not available. Restart the desktop app.')
         }
-        const [settings, repositories, worktrees] = await Promise.all([
+        const [settings, existingRepos, existingWorktrees] = await Promise.all([
           api.getSettings(),
           api.getRepositories(),
           api.getWorktrees(),
@@ -28,6 +29,55 @@ export default function App() {
         if (cancelled) return
         applyTheme(settings.theme)
         setSettings(settings)
+
+        let repositories = existingRepos
+        let worktrees = existingWorktrees
+
+        const roots = new Set<string>()
+        for (const dir of settings?.watchedDirectories ?? []) {
+          if (dir.trim().length > 0) roots.add(dir)
+        }
+        for (const r of existingRepos) {
+          if (r.path.trim().length > 0) roots.add(r.path)
+        }
+
+        if (roots.size > 0) {
+          const result = await api.discoverWorktrees({ roots: Array.from(roots), maxDepth: 5 })
+          if (!result.cancelled) {
+            const existingByPath = new Map(existingRepos.map((r) => [r.path, r]))
+            const existingById = new Map(existingRepos.map((r) => [r.id, r]))
+            const mergedRepos: Repository[] = []
+            for (const r of result.repositories) {
+              const prev = existingByPath.get(r.path) || existingById.get(r.id)
+              if (!prev) {
+                mergedRepos.push(r)
+                continue
+              }
+              mergedRepos.push({
+                ...r,
+                favorite: prev.favorite ?? r.favorite,
+                preferredEditor: prev.preferredEditor ?? r.preferredEditor,
+                imageUrl: prev.imageUrl ?? r.imageUrl,
+                baseBranch: r.baseBranch || prev.baseBranch,
+                provider: prev.provider?.personalAccessToken
+                  ? prev.provider
+                  : (r.provider ?? prev.provider),
+              })
+            }
+
+            const kept: Worktree[] = []
+            for (const w of existingWorktrees) {
+              if (!result.repositories.some((r) => r.id === w.repositoryId)) {
+                kept.push(w)
+              }
+            }
+
+            repositories = mergedRepos
+            worktrees = [...kept, ...result.worktrees]
+            await Promise.all([api.setRepositories(repositories), api.setWorktrees(worktrees)])
+          }
+        }
+
         setRepositories(repositories)
         setWorktrees(worktrees)
 

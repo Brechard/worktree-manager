@@ -683,7 +683,7 @@ function WorktreeRowHeader({
               behindBase={behindBase}
               baseRef={baseRef}
               syncMode={syncMode}
-              canSync={!detached}
+              canSync={canSync}
             />
             <IconButton
               title={`Open in ${editorLabel(editorId)}`}

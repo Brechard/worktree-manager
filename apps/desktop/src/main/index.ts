@@ -38,6 +38,7 @@ import {
   refreshPullRequest,
   refreshBaseBranch,
   runCommand,
+  syncWithBase,
   toRepositoryBaseStatus,
   updateBaseBranch,
   type MergeMode,
@@ -51,6 +52,7 @@ import {
   type RepositoryBaseStatus,
   type ScanProgress,
   type ScanResult,
+  type SyncBaseMode,
   type Worktree,
   type WorktreeDetails,
   type WorktreeStatus,
@@ -856,6 +858,17 @@ ipcMain.handle('pull-worktree', async (_, path: string) => {
 ipcMain.handle('update-base-branch', async (_, args: { path: string; baseBranch: string }) => {
   return updateBaseBranch(args.path, args.baseBranch)
 })
+
+ipcMain.handle(
+  'sync-with-base',
+  async (_, args: { path: string; baseBranch: string; mode?: SyncBaseMode }) => {
+    return syncWithBase({
+      cwd: args.path,
+      baseBranch: args.baseBranch,
+      ...(args.mode ? { mode: args.mode } : {}),
+    })
+  }
+)
 
 ipcMain.handle('rebase-worktree', async (_, path: string) => {
   return rebaseWorktree(path)

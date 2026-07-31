@@ -247,6 +247,86 @@ export async function getAheadBehind(
   return { ahead, behind, hasUpstream: true }
 }
 
+/**
+ * Compare HEAD with an arbitrary ref. `behind` is what the ref has that HEAD
+ * does not — for a base ref that is exactly "commits not integrated yet".
+ */
+export async function getRefAheadBehind(
+  cwd: string,
+  ref: string
+): Promise<{ ahead: number; behind: number }> {
+  const { stdout, exitCode } = await runGit(cwd, [
+    'rev-list',
+    '--left-right',
+    '--count',
+    `HEAD...${ref}`,
+  ])
+  if (exitCode !== 0 || !stdout) return { ahead: 0, behind: 0 }
+  const [aheadStr, behindStr] = stdout.split(/\s+/)
+  return {
+    ahead: Number.parseInt(aheadStr ?? '0', 10) || 0,
+    behind: Number.parseInt(behindStr ?? '0', 10) || 0,
+  }
+}
+
+/** Turn `refs/remotes/origin/main` into `origin/main` for display. */
+export function shortRefName(ref: string): string {
+  return ref.replace(/^refs\/remotes\//, '').replace(/^refs\/heads\//, '')
+}
+
+/**
+ * The base ref to compare against, preferring the remote-tracking ref because a
+ * local base branch in a worktree checkout is usually days stale. Does not fetch.
+ */
+export async function resolveBaseRef(cwd: string, baseBranch: string): Promise<string | undefined> {
+  const base = baseBranch.replace(/^refs\/heads\//, '').replace(/^origin\//, '') || 'main'
+  if (await refExists(cwd, `refs/remotes/origin/${base}`)) return `refs/remotes/origin/${base}`
+  if (await refExists(cwd, `refs/heads/${base}`)) return `refs/heads/${base}`
+  const fallback = await getDefaultBranch(cwd)
+  if (!fallback) return undefined
+  if (await refExists(cwd, `refs/remotes/origin/${fallback}`)) return `refs/remotes/origin/${fallback}`
+  if (await refExists(cwd, `refs/heads/${fallback}`)) return `refs/heads/${fallback}`
+  return undefined
+}
+
+/** Merge commits reachable from HEAD but not from `ref`. */
+export async function countMergeCommits(cwd: string, ref: string): Promise<number> {
+  const { stdout, exitCode } = await runGit(cwd, [
+    'rev-list',
+    '--count',
+    '--merges',
+    `${ref}..HEAD`,
+  ])
+  if (exitCode !== 0) return 0
+  return Number.parseInt(stdout || '0', 10) || 0
+}
+
+/**
+ * Would merging `ref` into HEAD apply cleanly? Answered by an in-memory merge:
+ * it writes objects but touches neither the index, the working tree nor any ref,
+ * so it is safe to ask right after a rebase has just been rolled back.
+ *
+ * `undefined` when git cannot answer (the flag needs git 2.38+).
+ */
+export async function mergeWouldBeClean(cwd: string, ref: string): Promise<boolean | undefined> {
+  const { exitCode } = await runGit(cwd, ['merge-tree', '--write-tree', 'HEAD', ref], {
+    maxBuffer: 8 * 1024 * 1024,
+  })
+  if (exitCode === 0) return true
+  if (exitCode === 1) return false
+  return undefined
+}
+
+/** Files left with conflict markers by an in-progress merge/rebase. */
+export async function getConflictedFiles(cwd: string): Promise<string[]> {
+  const { stdout, exitCode } = await runGit(cwd, ['diff', '--name-only', '--diff-filter=U'])
+  if (exitCode !== 0) return []
+  return stdout
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+}
+
 export async function countUnpushed(cwd: string): Promise<number> {
   const { stdout } = await runGit(cwd, ['rev-list', '--count', 'HEAD', '--not', '--remotes'])
   return parseInt(stdout || '0', 10) || 0
@@ -343,6 +423,22 @@ export async function getUnpushedCommits(cwd: string, max = 20): Promise<CommitI
     'HEAD',
     '--not',
     '--remotes',
+    `--max-count=${max}`,
+    `--format=${COMMIT_LOG_FORMAT}`,
+  ])
+  if (exitCode !== 0) return []
+  return parseCommitLog(stdout)
+}
+
+/** Commits reachable from `ref` but not from HEAD — i.e. what a sync would bring in. */
+export async function getIncomingCommits(
+  cwd: string,
+  ref: string,
+  max = 20
+): Promise<CommitInfo[]> {
+  const { stdout, exitCode } = await runGit(cwd, [
+    'log',
+    `HEAD..${ref}`,
     `--max-count=${max}`,
     `--format=${COMMIT_LOG_FORMAT}`,
   ])

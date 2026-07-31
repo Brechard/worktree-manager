@@ -12,6 +12,8 @@ import type {
   ProviderConfig,
   ProviderType,
   WorktreeStatusesResult,
+  SyncBaseMode,
+  SyncBaseResult,
 } from '@worktree/contracts'
 
 const api = {
@@ -110,6 +112,12 @@ const api = {
     baseBranch: string
   }): Promise<{ success: boolean; output: string }> =>
     ipcRenderer.invoke('update-base-branch', args),
+
+  syncWithBase: (args: {
+    path: string
+    baseBranch: string
+    mode?: SyncBaseMode
+  }): Promise<SyncBaseResult> => ipcRenderer.invoke('sync-with-base', args),
 
   commitWorktree: (args: {
     path: string

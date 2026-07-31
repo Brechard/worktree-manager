@@ -8,16 +8,21 @@ import type {
 } from '@worktree/contracts'
 import { branchCanHavePullRequest, worktreeSafetyReasons } from '@worktree/contracts'
 import {
+  countMergeCommits,
   countUnpushed,
   getAheadBehind,
   getBehindCommits,
   getCurrentBranch,
   getHeadCommit,
+  getIncomingCommits,
+  getRefAheadBehind,
   getStatusFiles,
   getStatusPorcelain,
   getUnpushedCommits,
   hasRemote,
   isMerged,
+  resolveBaseRef,
+  shortRefName,
 } from './git.js'
 import type { BaseBranchSnapshot } from './base.js'
 import { lookupPullRequest } from './providers.js'
@@ -51,6 +56,9 @@ export async function getWorktreeStatus(options: StatusOptions): Promise<Worktre
       mergedIntoBase: false,
       baseBranch,
       hasOpenPR: false,
+      behindBase: 0,
+      aheadBase: 0,
+      mergeCommits: 0,
       branch: worktree.branch,
       detached: worktree.branch === 'HEAD',
       ...(worktree.headCommit ? { headCommit: worktree.headCommit } : {}),
@@ -59,14 +67,23 @@ export async function getWorktreeStatus(options: StatusOptions): Promise<Worktre
 
   const resolvedBase = baseSnapshot?.baseBranch ?? baseBranch
 
-  const [status, aheadBehind, merged, unpushed, branch, headCommit] = await Promise.all([
-    getStatusPorcelain(cwd).catch(() => ({ dirty: false, staged: false, hasUntracked: false })),
-    getAheadBehind(cwd).catch(() => ({ ahead: 0, behind: 0, hasUpstream: false })),
-    isMerged(cwd, baseBranch, baseSnapshot?.mergeRef).catch(() => false),
-    countUnpushed(cwd).catch(() => 0),
-    getCurrentBranch(cwd).catch(() => 'HEAD'),
-    getHeadCommit(cwd).catch(() => undefined),
-  ])
+  // Comparisons against the base use the same freshly-fetched ref the merged
+  // check does, so "3 behind main" and "unmerged" can never disagree.
+  const baseFullRef = baseSnapshot?.mergeRef ?? (await resolveBaseRef(cwd, baseBranch).catch(() => undefined))
+
+  const [status, aheadBehind, merged, unpushed, branch, headCommit, baseAheadBehind, mergeCommits] =
+    await Promise.all([
+      getStatusPorcelain(cwd).catch(() => ({ dirty: false, staged: false, hasUntracked: false })),
+      getAheadBehind(cwd).catch(() => ({ ahead: 0, behind: 0, hasUpstream: false })),
+      isMerged(cwd, baseBranch, baseSnapshot?.mergeRef).catch(() => false),
+      countUnpushed(cwd).catch(() => 0),
+      getCurrentBranch(cwd).catch(() => 'HEAD'),
+      getHeadCommit(cwd).catch(() => undefined),
+      baseFullRef
+        ? getRefAheadBehind(cwd, baseFullRef).catch(() => ({ ahead: 0, behind: 0 }))
+        : Promise.resolve({ ahead: 0, behind: 0 }),
+      baseFullRef ? countMergeCommits(cwd, baseFullRef).catch(() => 0) : Promise.resolve(0),
+    ])
 
   const hasRemoteConfigured = await hasRemote(cwd).catch(() => false)
   const detached = branch === 'HEAD'
@@ -91,6 +108,10 @@ export async function getWorktreeStatus(options: StatusOptions): Promise<Worktre
     // ref at all), so the row has to say "unknown" rather than assert "unmerged".
     ...(baseSnapshot?.fetchError ? { baseFetchError: baseSnapshot.fetchError } : {}),
     hasOpenPR: pullRequest?.state === 'open' || pullRequest?.state === 'draft',
+    behindBase: baseAheadBehind.behind,
+    aheadBase: baseAheadBehind.ahead,
+    mergeCommits,
+    ...(baseFullRef ? { baseRef: shortRefName(baseFullRef) } : {}),
     branch,
     detached,
     ...(headCommit ? { headCommit } : {}),
@@ -137,10 +158,15 @@ export async function getWorktreeDetails(options: StatusOptions) {
   const cwd = worktree.path
   const baseBranch = repository.baseBranch || 'main'
 
-  const [files, unpushed, behind] = await Promise.all([
+  // No fetch here: details load on expand and must stay snappy. The refs were
+  // already fetched by the status refresh that populated the row.
+  const baseFullRef = await resolveBaseRef(cwd, baseBranch).catch(() => undefined)
+
+  const [files, unpushed, behind, baseBehind] = await Promise.all([
     getStatusFiles(cwd).catch(() => ({ dirty: [], staged: [], untracked: [] })),
     getUnpushedCommits(cwd).catch(() => []),
     getBehindCommits(cwd).catch(() => []),
+    baseFullRef ? getIncomingCommits(cwd, baseFullRef).catch(() => []) : Promise.resolve([]),
   ])
 
   return {
@@ -150,7 +176,9 @@ export async function getWorktreeDetails(options: StatusOptions) {
     untrackedFiles: files.untracked,
     unpushedCommits: unpushed,
     behindCommits: behind,
+    baseBehindCommits: baseBehind,
     baseBranch,
+    ...(baseFullRef ? { baseRef: shortRefName(baseFullRef) } : {}),
   }
 }
 

@@ -563,8 +563,12 @@ export function Dashboard() {
       />
 
       {ctx.actionError && (
-        <div className="flex items-center justify-between border-b border-destructive/30 bg-destructive/10 px-4 py-2 text-xs text-destructive">
-          <span className="truncate">{ctx.actionError}</span>
+        <div className="flex items-start justify-between border-b border-destructive/30 bg-destructive/10 px-4 py-2 text-xs text-destructive">
+          {/* Sync reports are several lines (what happened, which files, how to
+              recover), so this wraps rather than truncating them away. */}
+          <span className="max-h-40 min-w-0 overflow-y-auto whitespace-pre-line break-words leading-relaxed">
+            {ctx.actionError}
+          </span>
           <button
             type="button"
             onClick={() => ctx.setActionError(null)}

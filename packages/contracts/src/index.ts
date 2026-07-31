@@ -124,6 +124,19 @@ export const worktreeStatusSchema = z.object({
   hasOpenPR: z.boolean().default(false),
   pullRequest: pullRequestSchema.optional(),
   lastFetched: z.number().optional(),
+  /** Commits on the freshly-fetched base ref that this branch has not integrated
+   *  yet. This is the "base moved on without you" count, and is unrelated to
+   *  `behind`, which compares against this branch's own upstream. */
+  behindBase: z.number().int().nonnegative().default(0),
+  /** Commits on this branch that the base ref does not have. */
+  aheadBase: z.number().int().nonnegative().default(0),
+  /** Display form of the ref the two counts above were measured against
+   *  (`origin/main` when the fetch worked, `main` when only a local ref exists). */
+  baseRef: z.string().optional(),
+  /** Merge commits on this branch that the base ref does not have. A rebase
+   *  replays them one by one, which is how a branch that has merged the base in
+   *  before ends up re-fighting conflicts it already settled. */
+  mergeCommits: z.number().int().nonnegative().default(0),
   /** Live branch name at refresh time ('HEAD' when detached); overrides the
    *  possibly-stale value stored on the worktree from the last full scan. */
   branch: z.string().optional(),
@@ -247,7 +260,86 @@ export const worktreeDetailsSchema = z.object({
   stagedFiles: z.array(worktreeStatusFileSchema).default([]),
   untrackedFiles: z.array(worktreeStatusFileSchema).default([]),
   unpushedCommits: z.array(worktreeCommitSchema).default([]),
+  /** Commits this branch is missing from its own upstream (`origin/<branch>`). */
   behindCommits: z.array(worktreeCommitSchema).default([]),
+  /** Commits this branch is missing from the base ref — what a sync would bring in. */
+  baseBehindCommits: z.array(worktreeCommitSchema).default([]),
   baseBranch: z.string(),
+  /** Display form of the ref `baseBehindCommits` was measured against. */
+  baseRef: z.string().optional(),
 })
 export type WorktreeDetails = z.infer<typeof worktreeDetailsSchema>
+
+export const syncBaseModeSchema = z.enum(['rebase', 'merge'])
+export type SyncBaseMode = z.infer<typeof syncBaseModeSchema>
+
+/**
+ * Which way to bring the base in, and why. Rebase is the nicer default — until
+ * the branch's own shape says otherwise, at which point picking it is a trap
+ * the user only finds out about by hitting conflicts. Both signals below mean
+ * "the commits are not yours alone to rewrite":
+ *  - merge commits from an earlier sync, which a rebase replays individually
+ *  - an open PR, which means the commits are already pushed and reviewed
+ *
+ * Shared so the button label, its tooltip and the git menu all agree.
+ */
+export function recommendedSyncMode(
+  status: Pick<WorktreeStatus, 'hasOpenPR' | 'mergeCommits'> | undefined,
+  baseRef: string
+): { mode: SyncBaseMode; reason?: string } {
+  if (!status) return { mode: 'rebase' }
+  if (status.mergeCommits > 0) {
+    return {
+      mode: 'merge',
+      reason: `This branch already contains ${status.mergeCommits} merge commit${status.mergeCommits === 1 ? '' : 's'}. Rebasing replays each of them onto ${baseRef}, which re-opens conflicts you already settled.`,
+    }
+  }
+  if (status.hasOpenPR) {
+    return {
+      mode: 'merge',
+      reason:
+        'This branch has an open pull request, so its commits are already pushed. Rebasing would rewrite them.',
+    }
+  }
+  return { mode: 'rebase' }
+}
+
+/**
+ * What a base sync actually did. Every value other than `restore-conflict`
+ * leaves the worktree in a settled state: either the sync landed, or nothing
+ * changed at all. `conflict` specifically means the operation was rolled back.
+ */
+export const syncBaseOutcomeSchema = z.enum([
+  /** The branch already contains everything on the base ref. */
+  'up-to-date',
+  /** The rebase/merge landed and any stashed changes were restored. */
+  'synced',
+  /** Conflicts hit; the operation was aborted and the worktree restored. */
+  'conflict',
+  /** Preconditions failed (detached HEAD, another rebase in progress, …). Nothing ran. */
+  'blocked',
+  /** The sync landed but re-applying the stashed changes conflicted; the stash is kept. */
+  'restore-conflict',
+])
+export type SyncBaseOutcome = z.infer<typeof syncBaseOutcomeSchema>
+
+export const syncBaseResultSchema = z.object({
+  success: z.boolean(),
+  outcome: syncBaseOutcomeSchema,
+  mode: syncBaseModeSchema,
+  /** Display form of the ref that was synced from, e.g. `origin/main`. */
+  baseRef: z.string().optional(),
+  /** One-line summary, followed by detail lines. Safe to show verbatim. */
+  output: z.string(),
+  conflictedFiles: z.array(z.string()).default([]),
+  /** The mode that would actually work, when the attempted one did not — set
+   *  after a conflicting rebase that a merge is proven to resolve cleanly. */
+  recommendedMode: syncBaseModeSchema.optional(),
+  /** Ref pinned at the pre-sync HEAD so the previous state stays reachable. */
+  backupRef: z.string().optional(),
+  /** Short pre-sync HEAD, for the recovery hint. */
+  previousHead: z.string().optional(),
+  /** Uncommitted work was stashed for the duration of the operation. */
+  stashed: z.boolean().default(false),
+})
+export type SyncBaseResult = z.infer<typeof syncBaseResultSchema>

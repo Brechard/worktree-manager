@@ -18,12 +18,19 @@ import {
   Undo2,
   AlertTriangle,
 } from 'lucide-react'
-import type { Repository, Worktree, WorktreeStatus, WorktreeDetails } from '@worktree/contracts'
-import { branchCanHavePullRequest } from '@worktree/contracts'
+import type {
+  Repository,
+  SyncBaseMode,
+  Worktree,
+  WorktreeStatus,
+  WorktreeDetails,
+} from '@worktree/contracts'
+import { branchCanHavePullRequest, recommendedSyncMode } from '@worktree/contracts'
 import { cn } from '../lib/utils'
 import { editorLabel, shortenPath } from '../lib/paths'
 import { api } from '../api'
 import { GitActionsMenu, type MergeMode } from './GitActionsMenu'
+import { SyncBaseButton } from './SyncBaseButton'
 import { DiffViewer } from './DiffViewer'
 import { isSafeToDelete } from '../lib/worktreeSorting'
 
@@ -38,6 +45,7 @@ type BusyKind =
   | 'updateBase'
   | 'checkout'
   | 'merge'
+  | 'sync'
 
 interface WorktreeRowProps {
   worktree: Worktree
@@ -61,6 +69,7 @@ const gitActions = new Set([
   'updateBase',
   'checkout',
   'merge',
+  'sync',
 ])
 
 export function WorktreeRow(props: WorktreeRowProps) {
@@ -80,6 +89,9 @@ export function WorktreeRow(props: WorktreeRowProps) {
   const [loadingDiff, setLoadingDiff] = useState(false)
   const [commitMessage, setCommitMessage] = useState('')
   const [showCommitInput, setShowCommitInput] = useState(false)
+  // Set when a sync came back saying the other mode is the one that works, so
+  // the next click runs that instead of walking into the same conflict again.
+  const [learnedMode, setLearnedMode] = useState<SyncBaseMode | null>(null)
 
   useEffect(() => {
     if (!expanded || details) return
@@ -161,6 +173,22 @@ export function WorktreeRow(props: WorktreeRowProps) {
       window.api.updateBaseBranch({ path: worktree.path, baseBranch: repository.baseBranch })
     )
 
+  // Unlike the other git actions, a sync reports back even when it succeeds:
+  // "already up to date" and "the rebase landed but your stash needs a hand" are
+  // both outcomes the user has to see, not silent no-ops.
+  const handleSync = (mode: SyncBaseMode) =>
+    run('sync', async () => {
+      const result = await window.api.syncWithBase({
+        path: worktree.path,
+        baseBranch: repository.baseBranch,
+        mode,
+      })
+      setLearnedMode(result.recommendedMode ?? null)
+      if (!result.success) return { success: false, output: result.output }
+      if (result.outcome !== 'synced') onActionError?.(result.output)
+      return undefined
+    })
+
   const handleLoadBranches = () => window.api.getRepoBranches(worktree.path).then((r) => r.branches)
   const handleCheckout = (branch: string) => {
     onBranchChange?.(worktree.id, branch)
@@ -237,6 +265,14 @@ export function WorktreeRow(props: WorktreeRowProps) {
     }
   }
 
+  // A learned mode only answers "what works against *this* base, from *this*
+  // commit". Once either moves the answer may differ, so drop it and let the
+  // branch's own shape decide again.
+  const syncSignature = `${status?.baseRef ?? ''}:${status?.behindBase ?? 0}:${status?.headCommit ?? ''}`
+  useEffect(() => {
+    setLearnedMode(null)
+  }, [syncSignature])
+
   const liveBranch = status?.branch ?? worktree.branch
   const detached = status?.detached ?? liveBranch === 'HEAD'
   const headCommit = status?.headCommit ?? worktree.headCommit
@@ -284,6 +320,8 @@ export function WorktreeRow(props: WorktreeRowProps) {
         handleUpdateBaseBranch={handleUpdateBaseBranch}
         handleCheckout={handleCheckout}
         handleMerge={handleMerge}
+        handleSync={handleSync}
+        learnedMode={learnedMode}
         handleLoadBranches={handleLoadBranches}
       />
       {expanded && (
@@ -312,6 +350,8 @@ function gitBusyLabel(kind: string, baseBranch: string): string {
   switch (kind) {
     case 'updateBase':
       return `Updating ${baseBranch}`
+    case 'sync':
+      return `Syncing with ${baseBranch}`
     case 'pull':
       return 'Pulling'
     case 'rebase':
@@ -358,6 +398,9 @@ interface WorktreeRowHeaderProps {
   handleUpdateBaseBranch: () => void
   handleCheckout: (branch: string) => void
   handleMerge: (branch: string, mode: MergeMode) => void
+  handleSync: (mode: SyncBaseMode) => void
+  /** Mode a previous sync proved to be the working one, if any. */
+  learnedMode: SyncBaseMode | null
   handleLoadBranches: () => Promise<string[]>
 }
 
@@ -390,8 +433,21 @@ function WorktreeRowHeader({
   handleUpdateBaseBranch,
   handleCheckout,
   handleMerge,
+  handleSync,
+  learnedMode,
   handleLoadBranches,
 }: WorktreeRowHeaderProps) {
+  const behindBase = status?.behindBase ?? 0
+  const baseRef = status?.baseRef ?? repository.baseBranch
+  const canSync = !prunable && !detached && behindBase > 0
+  const suggested = recommendedSyncMode(status, baseRef)
+  // What a sync actually proved beats what the branch's shape suggests.
+  const syncMode = learnedMode ?? suggested.mode
+  const syncReason =
+    learnedMode && learnedMode !== suggested.mode
+      ? `A rebase onto ${baseRef} conflicts here, but a merge applies cleanly.`
+      : suggested.reason
+
   return (
     <div className="flex items-center justify-between gap-3 px-4 py-3">
       <div
@@ -529,7 +585,23 @@ function WorktreeRowHeader({
                   {status.ahead > 0 ? `${status.ahead} ahead` : `${status.unpushed} unpushed`}
                 </span>
               )}
-              {status.behind > 0 && <span>{status.behind} behind</span>}
+              {/* On the base branch itself the upstream *is* the base ref, so the
+                  count below already says it — don't print the same number twice. */}
+              {status.behind > 0 && liveBranch !== status.baseBranch && (
+                <span title={`${status.behind} commit(s) on this branch's own upstream`}>
+                  {status.behind} behind upstream
+                </span>
+              )}
+              {/* Only when there is no sync button to say it — the button spells
+                  out the same count and ref, and printing both reads as noise. */}
+              {behindBase > 0 && !canSync && (
+                <span
+                  className="text-primary"
+                  title={`${baseRef} has ${behindBase} commit(s) this branch has not integrated yet.`}
+                >
+                  {behindBase} behind {baseRef}
+                </span>
+              )}
               {detached ? (
                 <span className="text-muted">detached</span>
               ) : !status.mergedIntoBase && liveBranch !== status.baseBranch ? (
@@ -580,6 +652,17 @@ function WorktreeRowHeader({
                 {gitBusyLabel(busy, repository.baseBranch)}
               </span>
             )}
+            {canSync && (
+              <SyncBaseButton
+                behind={behindBase}
+                baseRef={baseRef}
+                mode={syncMode}
+                reason={syncReason}
+                busy={busy === 'sync'}
+                disabled={Boolean(busy) && busy !== 'sync'}
+                onSync={handleSync}
+              />
+            )}
             <GitActionsMenu
               busy={busy}
               branch={liveBranch}
@@ -596,6 +679,11 @@ function WorktreeRowHeader({
               onUpdateBaseBranch={handleUpdateBaseBranch}
               onCheckout={handleCheckout}
               onMerge={handleMerge}
+              onSync={handleSync}
+              behindBase={behindBase}
+              baseRef={baseRef}
+              syncMode={syncMode}
+              canSync={!detached}
             />
             <IconButton
               title={`Open in ${editorLabel(editorId)}`}
@@ -741,16 +829,20 @@ function WorktreeRowDetails({
             loadingDiff={loadingDiff}
           />
           <CommitList title="Unpushed commits" commits={details.unpushedCommits} />
-          {details.behindCommits.length > 0 && (
+          {details.baseBehindCommits.length > 0 && (
             <CommitList
-              title={`Behind ${details.baseBranch}`}
-              commits={details.behindCommits}
+              title={`Not yet integrated from ${details.baseRef ?? details.baseBranch}`}
+              commits={details.baseBehindCommits}
             />
+          )}
+          {details.behindCommits.length > 0 && (
+            <CommitList title="Behind this branch's upstream" commits={details.behindCommits} />
           )}
           {details.dirtyFiles.length === 0 &&
             details.stagedFiles.length === 0 &&
             details.untrackedFiles.length === 0 &&
             details.unpushedCommits.length === 0 &&
+            details.baseBehindCommits.length === 0 &&
             details.behindCommits.length === 0 && (
               <p className="text-xs text-muted">Nothing to show for this worktree.</p>
             )}

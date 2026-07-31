@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import {
   GitBranch,
   GitCommit,
   GitMerge,
+  ArrowDownToLine,
   Download,
   Upload,
   RefreshCw,
@@ -12,7 +14,9 @@ import {
   ChevronLeft,
   Loader2,
 } from 'lucide-react'
+import type { SyncBaseMode } from '@worktree/contracts'
 import { cn } from '../lib/utils'
+import { useFloatingMenu } from './useFloatingMenu'
 
 const BusyIcon = <Loader2 className="h-3.5 w-3.5 animate-spin" />
 
@@ -23,19 +27,28 @@ export type MergeMode = 'merge' | 'no-ff' | 'squash' | 'rebase'
 
 interface GitActionsMenuProps {
   busy:
-  | 'editor'
-  | 'terminal'
-  | 'folder'
-  | 'pull'
-  | 'rebase'
-  | 'push'
-  | 'commit'
-  | 'updateBase'
-  | 'checkout'
-  | 'merge'
-  | null
+    | 'editor'
+    | 'terminal'
+    | 'folder'
+    | 'pull'
+    | 'rebase'
+    | 'push'
+    | 'commit'
+    | 'updateBase'
+    | 'checkout'
+    | 'merge'
+    | 'sync'
+    | null
   branch: string
   baseBranch: string
+  /** Display ref the sync would pull from, e.g. `origin/main`. */
+  baseRef: string
+  /** Commits on the base ref this branch has not integrated. */
+  behindBase: number
+  /** The mode suited to this branch; marked as suggested in the list. */
+  syncMode: SyncBaseMode
+  /** False on a detached HEAD, where there is no branch to sync. */
+  canSync: boolean
   showCommitInput: boolean
   loadBranches: () => Promise<string[]>
   onPull: () => void
@@ -45,9 +58,18 @@ interface GitActionsMenuProps {
   onUpdateBaseBranch: () => void
   onCheckout: (branch: string) => void
   onMerge: (branch: string, mode: MergeMode) => void
+  onSync: (mode: SyncBaseMode) => void
 }
 
 type View = 'root' | 'checkout' | 'merge' | 'merge-mode'
+
+function SuggestedTag() {
+  return (
+    <span className="ml-auto shrink-0 rounded bg-primary/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-primary">
+      suggested
+    </span>
+  )
+}
 
 const MERGE_MODES: { mode: MergeMode; label: string; hint: string }[] = [
   { mode: 'merge', label: 'Merge commit', hint: 'git merge' },
@@ -60,6 +82,10 @@ export function GitActionsMenu({
   busy,
   branch,
   baseBranch,
+  baseRef,
+  behindBase,
+  syncMode,
+  canSync,
   showCommitInput,
   loadBranches,
   onPull,
@@ -69,6 +95,7 @@ export function GitActionsMenu({
   onUpdateBaseBranch,
   onCheckout,
   onMerge,
+  onSync,
 }: GitActionsMenuProps) {
   const [open, setOpen] = useState(false)
   const [view, setView] = useState<View>('root')
@@ -76,16 +103,7 @@ export function GitActionsMenu({
   const [loading, setLoading] = useState(false)
   const [query, setQuery] = useState('')
   const [target, setTarget] = useState<string | null>(null)
-  const ref = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    if (!open) return
-    const close = (e: MouseEvent) => {
-      if (!ref.current?.contains(e.target as Node)) setOpen(false)
-    }
-    document.addEventListener('mousedown', close)
-    return () => document.removeEventListener('mousedown', close)
-  }, [open])
+  const { anchorRef, menuRef, position } = useFloatingMenu(open, setOpen)
 
   // Reset navigation state whenever the menu closes.
   useEffect(() => {
@@ -121,7 +139,7 @@ export function GitActionsMenu({
   )
 
   return (
-    <div ref={ref} className="relative">
+    <div ref={anchorRef} className="relative">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -137,162 +155,210 @@ export function GitActionsMenu({
         Git
         <ChevronDown className={cn('h-3 w-3 transition-transform', open && 'rotate-180')} />
       </button>
-      {open && (
-        <div className="absolute right-0 z-10 mt-1 w-56 rounded-md border border-border bg-background p-1 shadow-2xl ring-1 ring-border">
-          {view === 'root' && (
-            <>
-              {branch !== baseBranch && (
+      {open &&
+        createPortal(
+          <div
+            ref={menuRef}
+            className="fixed z-50 w-56 rounded-md border border-border bg-background p-1 shadow-2xl ring-1 ring-border"
+            style={{
+              top: position?.top ?? 0,
+              left: position?.left ?? 0,
+              maxHeight: position?.maxHeight,
+              overflowY: position?.maxHeight === undefined ? undefined : 'auto',
+              visibility: position ? 'visible' : 'hidden',
+            }}
+          >
+            {view === 'root' && (
+              <>
+                {canSync && (
+                  <>
+                    <p className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted">
+                      {behindBase > 0
+                        ? `${behindBase} new commit${behindBase === 1 ? '' : 's'} on ${baseRef}`
+                        : `Up to date with ${baseRef}`}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOpen(false)
+                        onSync('rebase')
+                      }}
+                      disabled={Boolean(busy)}
+                      className={cn(itemClass, busy === 'sync' && 'bg-accent')}
+                    >
+                      {busy === 'sync' ? BusyIcon : <ArrowDownToLine className="h-3.5 w-3.5" />}
+                      Rebase onto {baseRef}
+                      {syncMode === 'rebase' && <SuggestedTag />}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOpen(false)
+                        onSync('merge')
+                      }}
+                      disabled={Boolean(busy)}
+                      className={itemClass}
+                    >
+                      <GitMerge className="h-3.5 w-3.5" />
+                      Merge {baseRef} in
+                      {syncMode === 'merge' && <SuggestedTag />}
+                    </button>
+                    <div className="my-1 border-t border-border" />
+                  </>
+                )}
+                {branch !== baseBranch && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setOpen(false)
+                      onUpdateBaseBranch()
+                    }}
+                    disabled={Boolean(busy)}
+                    className={cn(itemClass, busy === 'updateBase' && 'bg-accent')}
+                  >
+                    {busy === 'updateBase' ? BusyIcon : <RefreshCcw className="h-3.5 w-3.5" />}
+                    Update {baseBranch}
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => {
                     setOpen(false)
-                    onUpdateBaseBranch()
+                    onPull()
                   }}
                   disabled={Boolean(busy)}
-                  className={cn(itemClass, busy === 'updateBase' && 'bg-accent')}
+                  className={cn(itemClass, busy === 'pull' && 'bg-accent')}
                 >
-                  {busy === 'updateBase' ? BusyIcon : <RefreshCcw className="h-3.5 w-3.5" />}
-                  Update {baseBranch}
+                  {busy === 'pull' ? BusyIcon : <Download className="h-3.5 w-3.5" />}
+                  Pull fast-forward
                 </button>
-              )}
-              <button
-                type="button"
-                onClick={() => {
-                  setOpen(false)
-                  onPull()
-                }}
-                disabled={Boolean(busy)}
-                className={cn(itemClass, busy === 'pull' && 'bg-accent')}
-              >
-                {busy === 'pull' ? BusyIcon : <Download className="h-3.5 w-3.5" />}
-                Pull fast-forward
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setOpen(false)
-                  onRebase()
-                }}
-                disabled={Boolean(busy)}
-                className={cn(itemClass, busy === 'rebase' && 'bg-accent')}
-              >
-                {busy === 'rebase' ? BusyIcon : <RefreshCw className="h-3.5 w-3.5" />}
-                Pull with rebase
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setOpen(false)
-                  onPush()
-                }}
-                disabled={Boolean(busy)}
-                className={cn(itemClass, busy === 'push' && 'bg-accent')}
-              >
-                {busy === 'push' ? BusyIcon : <Upload className="h-3.5 w-3.5" />}
-                Push branch
-              </button>
-              <div className="my-1 border-t border-border" />
-              <button
-                type="button"
-                onClick={() => openBranchList('checkout')}
-                disabled={Boolean(busy)}
-                className={cn(itemClass, busy === 'checkout' && 'bg-accent')}
-              >
-                {busy === 'checkout' ? BusyIcon : <GitBranch className="h-3.5 w-3.5" />}
-                Checkout…
-                <ChevronRight className="ml-auto h-3.5 w-3.5 text-muted" />
-              </button>
-              <button
-                type="button"
-                onClick={() => openBranchList('merge')}
-                disabled={Boolean(busy)}
-                className={cn(itemClass, busy === 'merge' && 'bg-accent')}
-              >
-                {busy === 'merge' ? BusyIcon : <GitMerge className="h-3.5 w-3.5" />}
-                Merge…
-                <ChevronRight className="ml-auto h-3.5 w-3.5 text-muted" />
-              </button>
-              <div className="my-1 border-t border-border" />
-              <button
-                type="button"
-                onClick={() => {
-                  setOpen(false)
-                  onCommit()
-                }}
-                className={cn(itemClass, showCommitInput && 'bg-accent')}
-              >
-                <GitCommit className="h-3.5 w-3.5" />
-                {showCommitInput ? 'Hide commit' : 'Commit…'}
-              </button>
-            </>
-          )}
-
-          {view === 'checkout' && (
-            <>
-              {header('Checkout branch', 'root')}
-              <BranchList
-                branch={branch}
-                baseBranch={baseBranch}
-                branches={branches}
-                loading={loading}
-                query={query}
-                setQuery={setQuery}
-                onPick={(b) => {
-                  setOpen(false)
-                  onCheckout(b)
-                }}
-              />
-            </>
-          )}
-
-          {view === 'merge' && (
-            <>
-              {header('Merge branch into ' + branch, 'root')}
-              <BranchList
-                branch={branch}
-                baseBranch={baseBranch}
-                branches={branches}
-                loading={loading}
-                query={query}
-                setQuery={setQuery}
-                onPick={(b) => {
-                  setTarget(b)
-                  setView('merge-mode')
-                }}
-              />
-            </>
-          )}
-
-          {view === 'merge-mode' && target && (
-            <>
-              {header('Merge ' + target, 'merge')}
-              {MERGE_MODES.map(({ mode, label, hint }) => (
                 <button
-                  key={mode}
                   type="button"
                   onClick={() => {
                     setOpen(false)
-                    onMerge(target, mode)
+                    onRebase()
                   }}
-                  className={cn(itemClass, 'flex-col items-start gap-0.5')}
+                  disabled={Boolean(busy)}
+                  className={cn(itemClass, busy === 'rebase' && 'bg-accent')}
                 >
-                  <span className="flex items-center gap-2">
-                    {mode === 'rebase' ? (
-                      <RefreshCw className="h-3.5 w-3.5" />
-                    ) : (
-                      <GitMerge className="h-3.5 w-3.5" />
-                    )}
-                    {label}
-                  </span>
-                  <span className="pl-6 font-mono text-[10px] text-muted">
-                    {hint} {target}
-                  </span>
+                  {busy === 'rebase' ? BusyIcon : <RefreshCw className="h-3.5 w-3.5" />}
+                  Pull with rebase
                 </button>
-              ))}
-            </>
-          )}
-        </div>
-      )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpen(false)
+                    onPush()
+                  }}
+                  disabled={Boolean(busy)}
+                  className={cn(itemClass, busy === 'push' && 'bg-accent')}
+                >
+                  {busy === 'push' ? BusyIcon : <Upload className="h-3.5 w-3.5" />}
+                  Push branch
+                </button>
+                <div className="my-1 border-t border-border" />
+                <button
+                  type="button"
+                  onClick={() => openBranchList('checkout')}
+                  disabled={Boolean(busy)}
+                  className={cn(itemClass, busy === 'checkout' && 'bg-accent')}
+                >
+                  {busy === 'checkout' ? BusyIcon : <GitBranch className="h-3.5 w-3.5" />}
+                  Checkout…
+                  <ChevronRight className="ml-auto h-3.5 w-3.5 text-muted" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openBranchList('merge')}
+                  disabled={Boolean(busy)}
+                  className={cn(itemClass, busy === 'merge' && 'bg-accent')}
+                >
+                  {busy === 'merge' ? BusyIcon : <GitMerge className="h-3.5 w-3.5" />}
+                  Merge…
+                  <ChevronRight className="ml-auto h-3.5 w-3.5 text-muted" />
+                </button>
+                <div className="my-1 border-t border-border" />
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpen(false)
+                    onCommit()
+                  }}
+                  className={cn(itemClass, showCommitInput && 'bg-accent')}
+                >
+                  <GitCommit className="h-3.5 w-3.5" />
+                  {showCommitInput ? 'Hide commit' : 'Commit…'}
+                </button>
+              </>
+            )}
+
+            {view === 'checkout' && (
+              <>
+                {header('Checkout branch', 'root')}
+                <BranchList
+                  branch={branch}
+                  baseBranch={baseBranch}
+                  branches={branches}
+                  loading={loading}
+                  query={query}
+                  setQuery={setQuery}
+                  onPick={(b) => {
+                    setOpen(false)
+                    onCheckout(b)
+                  }}
+                />
+              </>
+            )}
+
+            {view === 'merge' && (
+              <>
+                {header('Merge branch into ' + branch, 'root')}
+                <BranchList
+                  branch={branch}
+                  baseBranch={baseBranch}
+                  branches={branches}
+                  loading={loading}
+                  query={query}
+                  setQuery={setQuery}
+                  onPick={(b) => {
+                    setTarget(b)
+                    setView('merge-mode')
+                  }}
+                />
+              </>
+            )}
+
+            {view === 'merge-mode' && target && (
+              <>
+                {header('Merge ' + target, 'merge')}
+                {MERGE_MODES.map(({ mode, label, hint }) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => {
+                      setOpen(false)
+                      onMerge(target, mode)
+                    }}
+                    className={cn(itemClass, 'flex-col items-start gap-0.5')}
+                  >
+                    <span className="flex items-center gap-2">
+                      {mode === 'rebase' ? (
+                        <RefreshCw className="h-3.5 w-3.5" />
+                      ) : (
+                        <GitMerge className="h-3.5 w-3.5" />
+                      )}
+                      {label}
+                    </span>
+                    <span className="pl-6 font-mono text-[10px] text-muted">
+                      {hint} {target}
+                    </span>
+                  </button>
+                ))}
+              </>
+            )}
+          </div>,
+          document.body
+        )}
     </div>
   )
 }

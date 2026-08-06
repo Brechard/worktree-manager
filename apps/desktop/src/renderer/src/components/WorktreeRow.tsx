@@ -53,6 +53,8 @@ interface WorktreeRowProps {
   status?: WorktreeStatus | undefined
   /** A targeted re-sync of this row is in flight (git + PR lookup). */
   refreshing?: boolean | undefined
+  /** The project's cleanup hook is running for this worktree. */
+  cleaning?: boolean | undefined
   editorId: string
   onDelete: (worktree: Worktree) => void
   onActionError?: ((message: string) => void) | undefined
@@ -73,7 +75,7 @@ const gitActions = new Set([
 ])
 
 export function WorktreeRow(props: WorktreeRowProps) {
-  const { worktree, repository, status, refreshing, editorId, onDelete, onActionError, onRefresh, onRefreshWorktree, onBranchChange } = props
+  const { worktree, repository, status, refreshing, cleaning, editorId, onDelete, onActionError, onRefresh, onRefreshWorktree, onBranchChange } = props
 
   const [busy, setBusy] = useState<BusyKind | null>(null)
   const [expanded, setExpanded] = useState(false)
@@ -296,6 +298,7 @@ export function WorktreeRow(props: WorktreeRowProps) {
         status={status}
         repository={repository}
         busy={busy}
+        cleaning={cleaning}
         liveBranch={liveBranch}
         detached={detached}
         headCommit={headCommit}
@@ -374,6 +377,7 @@ interface WorktreeRowHeaderProps {
   status?: WorktreeStatus | undefined
   repository: Repository
   busy: BusyKind | null
+  cleaning?: boolean | undefined
   liveBranch: string
   detached: boolean
   headCommit: string | undefined
@@ -409,6 +413,7 @@ function WorktreeRowHeader({
   status,
   repository,
   busy,
+  cleaning,
   liveBranch,
   detached,
   headCommit,
@@ -703,7 +708,12 @@ function WorktreeRowHeader({
               <FolderOpen className="h-4 w-4" />
             </IconButton>
             {!worktree.isMain && (
-              <IconButton title="Move to Trash" onClick={() => onDelete(worktree)} danger>
+              <IconButton
+                title={cleaning ? 'Running project cleanup…' : 'Move to Trash'}
+                onClick={() => onDelete(worktree)}
+                busy={cleaning === true}
+                danger
+              >
                 <Trash2 className="h-4 w-4" />
               </IconButton>
             )}

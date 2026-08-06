@@ -63,6 +63,10 @@ export function ProjectConfigModal({ repository, onClose, onSave }: ProjectConfi
   const [tokenHint, setTokenHint] = useState<string | null>(null)
   const [autoNote, setAutoNote] = useState<string | null>(null)
   const [imageUrl, setImageUrl] = useState(repository.imageUrl ?? '')
+  const [preDeleteCommand, setPreDeleteCommand] = useState(repository.preDeleteCommand ?? '')
+  const [preDeleteTimeout, setPreDeleteTimeout] = useState(
+    repository.preDeleteTimeoutSeconds ? String(repository.preDeleteTimeoutSeconds) : ''
+  )
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -198,7 +202,10 @@ export function ProjectConfigModal({ repository, onClose, onSave }: ProjectConfi
     (provider.repoName || '') !== (repository.provider?.repository || '') ||
     (provider.token || '') !== (repository.provider?.personalAccessToken || '') ||
     currentSource !== savedSource ||
-    (imageUrl || '') !== (repository.imageUrl || '')
+    (imageUrl || '') !== (repository.imageUrl || '') ||
+    (preDeleteCommand || '') !== (repository.preDeleteCommand || '') ||
+    (preDeleteTimeout || '') !==
+      (repository.preDeleteTimeoutSeconds ? String(repository.preDeleteTimeoutSeconds) : '')
 
   const handleBackdropMouseDown = (e: MouseEvent) => {
     if (e.target === e.currentTarget && !isDirty) onClose()
@@ -216,6 +223,7 @@ export function ProjectConfigModal({ repository, onClose, onSave }: ProjectConfi
       }
       : undefined
 
+    const timeoutSeconds = Number(preDeleteTimeout)
     onSave({
       ...repository,
       baseBranch,
@@ -223,6 +231,9 @@ export function ProjectConfigModal({ repository, onClose, onSave }: ProjectConfi
       preferredEditor: preferredEditor || undefined,
       imageUrl: imageUrl || undefined,
       provider: providerConfig,
+      preDeleteCommand: preDeleteCommand.trim() || undefined,
+      preDeleteTimeoutSeconds:
+        Number.isFinite(timeoutSeconds) && timeoutSeconds > 0 ? timeoutSeconds : undefined,
     })
   }
 
@@ -271,6 +282,13 @@ export function ProjectConfigModal({ repository, onClose, onSave }: ProjectConfi
               setImageUrl={setImageUrl}
               fileInputRef={fileInputRef}
               handleImageFile={handleImageFile}
+            />
+
+            <CleanupSection
+              preDeleteCommand={preDeleteCommand}
+              setPreDeleteCommand={setPreDeleteCommand}
+              preDeleteTimeout={preDeleteTimeout}
+              setPreDeleteTimeout={setPreDeleteTimeout}
             />
 
             <ProviderSection
@@ -473,6 +491,70 @@ function GeneralSection({
           </div>
         </div>
         <p className="mt-1 text-xs text-muted">Supports image URLs and local files.</p>
+      </div>
+    </section>
+  )
+}
+
+interface CleanupSectionProps {
+  preDeleteCommand: string
+  setPreDeleteCommand: (value: string) => void
+  preDeleteTimeout: string
+  setPreDeleteTimeout: (value: string) => void
+}
+
+function CleanupSection({
+  preDeleteCommand,
+  setPreDeleteCommand,
+  preDeleteTimeout,
+  setPreDeleteTimeout,
+}: CleanupSectionProps) {
+  return (
+    <section className="space-y-3 border-t border-border pt-5">
+      <div>
+        <h3 className="text-sm font-semibold">Cleanup on delete</h3>
+        <p className="mt-0.5 text-xs text-muted">
+          Runs in a worktree just before it is moved to Trash — release whatever that worktree
+          allocated outside git, like its own Docker stack, volumes and ports.
+        </p>
+      </div>
+
+      <div>
+        <label htmlFor="pre-delete-command" className="mb-1 block text-sm font-medium">
+          Command
+        </label>
+        <textarea
+          id="pre-delete-command"
+          value={preDeleteCommand}
+          onChange={(e) => setPreDeleteCommand(e.target.value)}
+          rows={3}
+          spellCheck={false}
+          placeholder="Leave empty to skip"
+          className="w-full resize-y rounded-md border border-border bg-background px-3 py-2 font-mono text-xs outline-none focus:border-primary"
+        />
+        <p className="mt-1.5 text-[11px] leading-relaxed text-muted">
+          Runs through your login shell, with the worktree as the working directory.{' '}
+          <code className="font-mono">$WORKTREE_PATH</code>,{' '}
+          <code className="font-mono">$WORKTREE_BRANCH</code>,{' '}
+          <code className="font-mono">$REPO_PATH</code> and{' '}
+          <code className="font-mono">$REPO_NAME</code> are available. If it fails you&rsquo;ll be
+          asked whether to delete anyway.
+        </p>
+      </div>
+
+      <div>
+        <label htmlFor="pre-delete-timeout" className="mb-1 block text-sm font-medium">
+          Timeout (seconds)
+        </label>
+        <input
+          id="pre-delete-timeout"
+          type="number"
+          min={1}
+          value={preDeleteTimeout}
+          onChange={(e) => setPreDeleteTimeout(e.target.value)}
+          placeholder="600"
+          className="w-32 rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
+        />
       </div>
     </section>
   )

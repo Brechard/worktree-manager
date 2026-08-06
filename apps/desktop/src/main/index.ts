@@ -19,6 +19,7 @@ import {
   commitWorktree,
   detectProviderToken,
   deleteLocalBranch,
+  runPreDeleteCommand,
   discardFile,
   discoverRepositories,
   evaluateSafety,
@@ -875,6 +876,39 @@ ipcMain.handle('pull-worktree', async (_, path: string) => {
 ipcMain.handle('update-base-branch', async (_, args: { path: string; baseBranch: string }) => {
   return updateBaseBranch(args.path, args.baseBranch)
 })
+
+// The project's pre-delete hook, run as its own step so the renderer can show
+// what it printed and let the user decide what to do when it fails — rather
+// than folding a failed Docker teardown into "could not remove worktree".
+ipcMain.handle(
+  'run-worktree-cleanup',
+  async (
+    _,
+    args: {
+      command: string
+      worktreePath: string
+      repoPath: string
+      branch?: string
+      repoName?: string
+      timeoutSeconds?: number
+    }
+  ) => {
+    try {
+      return await runPreDeleteCommand(
+        args.command,
+        {
+          worktreePath: args.worktreePath,
+          repoPath: args.repoPath,
+          ...(args.branch ? { branch: args.branch } : {}),
+          ...(args.repoName ? { repoName: args.repoName } : {}),
+        },
+        args.timeoutSeconds
+      )
+    } catch (err) {
+      return { success: false, output: String(err) }
+    }
+  }
+)
 
 ipcMain.handle(
   'sync-with-base',

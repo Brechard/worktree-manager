@@ -14,6 +14,7 @@ import type {
   WorktreeStatusesResult,
   SyncBaseMode,
   SyncBaseResult,
+  CleanupResult,
 } from '@worktree/contracts'
 
 const api = {
@@ -114,6 +115,15 @@ const api = {
     baseBranch: string
   }): Promise<{ success: boolean; output: string }> =>
     ipcRenderer.invoke('update-base-branch', args),
+
+  runWorktreeCleanup: (args: {
+    command: string
+    worktreePath: string
+    repoPath: string
+    branch?: string
+    repoName?: string
+    timeoutSeconds?: number
+  }): Promise<CleanupResult> => ipcRenderer.invoke('run-worktree-cleanup', args),
 
   syncWithBase: (args: {
     path: string

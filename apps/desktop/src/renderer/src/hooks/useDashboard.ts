@@ -41,6 +41,8 @@ export interface UseDashboardReturn {
   loading: boolean
   scanning: boolean
   refreshingIds: Set<string>
+  /** Worktrees whose project cleanup hook is currently running. */
+  cleaningIds: Set<string>
   baseStatuses: Record<string, RepositoryBaseStatus>
   /** True while the *selected* project's base branch is being updated. */
   baseUpdating: boolean
@@ -117,6 +119,9 @@ export function useDashboard(): UseDashboardReturn {
   const [configRepoId, setConfigRepoId] = useState<string | null>(null)
   const [scanning, setScanning] = useState(false)
   const [refreshingIds, setRefreshingIds] = useState<Set<string>>(new Set())
+  // Worktrees whose project cleanup hook is running. Tearing down a Docker
+  // stack takes a while, so the row has to say something is happening.
+  const [cleaningIds, setCleaningIds] = useState<Set<string>>(new Set())
   const [baseStatuses, setBaseStatuses] = useState<Record<string, RepositoryBaseStatus>>({})
 
   // Everything below is keyed by repository id. A project's refresh, base
@@ -590,11 +595,51 @@ export function useDashboard(): UseDashboardReturn {
       const repo = repositories.find((r) => r.id === w.repositoryId)
       if (!repo) return
 
+      // The project's cleanup hook, run while the worktree is still on disk so
+      // it can read per-worktree config (a Docker .env, a lockfile) to find out
+      // what to tear down. A failure is reported, never silently swallowed —
+      // but it doesn't get to block the delete on its own, since a stopped
+      // Docker daemon shouldn't strand a worktree the user wants gone.
+      const runCleanup = async (branch: string): Promise<boolean> => {
+        const command = repo.preDeleteCommand?.trim()
+        if (!command) return true
+
+        setCleaningIds((ids) => toggleId(ids, w.id, true))
+        try {
+          const result = await window.api.runWorktreeCleanup({
+            command,
+            worktreePath: w.path,
+            repoPath: repo.path,
+            branch,
+            repoName: repo.name,
+            ...(repo.preDeleteTimeoutSeconds
+              ? { timeoutSeconds: repo.preDeleteTimeoutSeconds }
+              : {}),
+          })
+          if (result.success) {
+            if (result.output) console.info('[worktree] cleanup:done', w.path, result.output)
+            return true
+          }
+          const reason = result.timedOut
+            ? `The cleanup command timed out.`
+            : `The cleanup command failed${result.exitCode != null ? ` (exit ${result.exitCode})` : ''}.`
+          setRepoError(repo.id, `${reason}\n\n${result.output}`)
+          return window.confirm(
+            `${reason}\n\n${result.output}\n\nDelete the worktree anyway? Whatever it allocated may stay behind.`
+          )
+        } finally {
+          setCleaningIds((ids) => toggleId(ids, w.id, false))
+        }
+      }
+
       if (w.prunable) {
         const ok = window.confirm(
           `This worktree's folder is already gone.\n\nRemove the stale entry from git?\n${shortenPath(w.path)}`
         )
         if (!ok) return
+        // The folder is gone but whatever it allocated may not be, so the hook
+        // still runs — from the repo root, since there's no worktree dir left.
+        if (!(await runCleanup(w.branch))) return
         const res = await window.api.removeWorktree({
           path: w.path,
           repoPath: repo.path,
@@ -634,6 +679,8 @@ export function useDashboard(): UseDashboardReturn {
       }
 
       const branch = status?.branch ?? w.branch
+      if (!(await runCleanup(branch))) return
+
       const shouldDeleteBranch =
         status?.mergedIntoBase === true && branch !== 'HEAD' && branch !== status.baseBranch
       const res = await window.api.removeWorktree({
@@ -654,7 +701,7 @@ export function useDashboard(): UseDashboardReturn {
       setWorktrees(next)
       await api.setWorktrees(next)
     },
-    [repositories, removeStatuses, setRepoError, setWorktrees, statuses, worktrees]
+    [repositories, removeStatuses, setCleaningIds, setRepoError, setWorktrees, statuses, worktrees]
   )
 
   const saveRepository = useCallback(
@@ -719,6 +766,7 @@ export function useDashboard(): UseDashboardReturn {
     loading,
     scanning,
     refreshingIds,
+    cleaningIds,
     baseStatuses,
     baseUpdating,
     busyRepoIds,

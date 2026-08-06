@@ -388,6 +388,7 @@ interface DashboardWorktreeListProps {
   repoWorktrees: Worktree[]
   statuses: Record<string, WorktreeStatus>
   refreshingIds: Set<string>
+  cleaningIds: Set<string>
   effectiveEditor: string
   selectedRepo: Repository
   handleDelete: (w: Worktree) => void
@@ -405,6 +406,7 @@ function DashboardWorktreeList({
   repoWorktrees,
   statuses,
   refreshingIds,
+  cleaningIds,
   effectiveEditor,
   selectedRepo,
   handleDelete,
@@ -469,6 +471,7 @@ function DashboardWorktreeList({
                     repository={selectedRepo}
                     status={statuses[w.id]}
                     refreshing={refreshingIds.has(w.id)}
+                    cleaning={cleaningIds.has(w.id)}
                     editorId={effectiveEditor}
                     onDelete={handleDelete}
                     onActionError={onActionError}
@@ -661,6 +664,7 @@ export function Dashboard() {
                 repoWorktrees={ctx.repoWorktrees}
                 statuses={ctx.statuses}
                 refreshingIds={ctx.refreshingIds}
+                cleaningIds={ctx.cleaningIds}
                 effectiveEditor={ctx.effectiveEditor}
                 selectedRepo={ctx.selectedRepo}
                 handleDelete={ctx.handleDelete}

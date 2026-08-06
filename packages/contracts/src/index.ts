@@ -27,8 +27,26 @@ export const repositorySchema = z.object({
   preferredEditor: z.string().optional(),
   /** Optional project image URL or data URL */
   imageUrl: z.string().optional(),
+  /**
+   * Shell command run inside a worktree just before it is deleted, to release
+   * whatever that worktree allocated outside git — per-worktree Docker stacks,
+   * volumes, ports, caches. Runs with WORKTREE_PATH / WORKTREE_BRANCH /
+   * REPO_PATH / REPO_NAME in the environment.
+   */
+  preDeleteCommand: z.string().optional(),
+  /** Seconds the pre-delete command may run before it is killed. */
+  preDeleteTimeoutSeconds: z.number().optional(),
 })
 export type Repository = z.infer<typeof repositorySchema>
+
+export const cleanupResultSchema = z.object({
+  success: z.boolean(),
+  /** Combined stdout + stderr, trimmed, for showing back to the user. */
+  output: z.string(),
+  exitCode: z.number().optional(),
+  timedOut: z.boolean().optional(),
+})
+export type CleanupResult = z.infer<typeof cleanupResultSchema>
 
 export const worktreeSortSchema = z.enum(['activity', 'name', 'safety'])
 export type WorktreeSort = z.infer<typeof worktreeSortSchema>

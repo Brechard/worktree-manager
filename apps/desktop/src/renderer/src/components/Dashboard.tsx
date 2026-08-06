@@ -57,6 +57,8 @@ interface DashboardSidebarProps {
   projectSearch: string
   setProjectSearch: (value: string) => void
   worktreeCountByRepo: Map<string, number>
+  busyRepoIds: Set<string>
+  erroredRepoIds: Set<string>
   selectRepository: (id: string) => void
   updateRepo: (id: string, patch: Partial<Repository>) => void
 }
@@ -67,6 +69,8 @@ function DashboardSidebar({
   projectSearch,
   setProjectSearch,
   worktreeCountByRepo,
+  busyRepoIds,
+  erroredRepoIds,
   selectRepository,
   updateRepo,
 }: DashboardSidebarProps) {
@@ -109,6 +113,11 @@ function DashboardSidebar({
             {sortedRepos.map((repo) => {
               const active = repo.id === selectedRepositoryId
               const count = worktreeCountByRepo.get(repo.id) ?? 0
+              // Work runs per project now, so a project can be mid-refresh
+              // while you're looking at another one — say so here rather than
+              // letting it finish invisibly.
+              const busy = busyRepoIds.has(repo.id)
+              const errored = erroredRepoIds.has(repo.id)
               return (
                 <li key={repo.id}>
                   <div
@@ -139,7 +148,23 @@ function DashboardSidebar({
                         />
                       )}
                       <span className="min-w-0 flex-1">
-                        <span className="block truncate text-[13px] font-medium">{repo.name}</span>
+                        <span className="flex min-w-0 items-center gap-1.5">
+                          <span className="min-w-0 truncate text-[13px] font-medium">
+                            {repo.name}
+                          </span>
+                          {busy && (
+                            <RefreshCw
+                              className="h-3 w-3 shrink-0 animate-spin text-muted"
+                              aria-label="Refreshing"
+                            />
+                          )}
+                          {errored && !busy && (
+                            <span
+                              className="h-1.5 w-1.5 shrink-0 rounded-full bg-destructive"
+                              title="This project has an unread error"
+                            />
+                          )}
+                        </span>
                         <span className="mt-0.5 block truncate text-[11px] text-muted">
                           {count} worktree{count === 1 ? '' : 's'}
                           {repo.preferredEditor ? ` · ${editorLabel(repo.preferredEditor)}` : ''}
@@ -393,7 +418,7 @@ function DashboardWorktreeList({
       {loading && (
         <div className="pointer-events-none absolute inset-x-0 top-3 z-20 flex flex-col items-center gap-2 px-4">
           <Loading
-            message="Fetching base branches…"
+            message={`Fetching ${selectedRepo.name} base branch…`}
             subMessage={
               baseStatusProgress && baseStatusProgress.total > 0
                 ? `${baseStatusProgress.current}/${baseStatusProgress.total}`
@@ -401,7 +426,7 @@ function DashboardWorktreeList({
             }
           />
           <Loading
-            message="Fetching worktree statuses…"
+            message={`Fetching ${selectedRepo.name} worktree statuses…`}
             subMessage={
               statusProgress && statusProgress.total > 0
                 ? `${statusProgress.current}/${statusProgress.total}`
@@ -541,14 +566,12 @@ export function Dashboard() {
             <button
               type="button"
               onClick={ctx.rescan}
-              disabled={ctx.loading || ctx.scanning}
+              disabled={ctx.scanning}
               className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1.5 text-xs font-medium hover:bg-accent"
-              title="Refresh worktrees and statuses"
+              title="Rescan every project for worktrees and statuses"
             >
-              <RefreshCw
-                className={cn('h-3.5 w-3.5', (ctx.loading || ctx.scanning) && 'animate-spin')}
-              />
-              {ctx.scanning ? 'Scanning…' : 'Refresh'}
+              <RefreshCw className={cn('h-3.5 w-3.5', ctx.scanning && 'animate-spin')} />
+              {ctx.scanning ? 'Scanning…' : 'Rescan all'}
             </button>
             <button
               type="button"
@@ -586,6 +609,8 @@ export function Dashboard() {
           projectSearch={ctx.projectSearch}
           setProjectSearch={ctx.setProjectSearch}
           worktreeCountByRepo={ctx.worktreeCountByRepo}
+          busyRepoIds={ctx.busyRepoIds}
+          erroredRepoIds={ctx.erroredRepoIds}
           selectRepository={ctx.selectRepository}
           updateRepo={ctx.updateRepo}
         />

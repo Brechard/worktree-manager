@@ -578,9 +578,19 @@ function createSemaphore(concurrency: number) {
   }
 }
 
+// Module-level, not per-invocation: the renderer refreshes one project at a
+// time now, so several `get-worktree-statuses` calls can be in flight at once.
+// A per-call semaphore would let N concurrent projects mean N × the git and
+// network fan-out; these keep the ceiling the same no matter how many run.
+const baseFetchSemaphore = createSemaphore(4)
+const statusFetchSemaphore = createSemaphore(6)
+
 ipcMain.handle(
   'get-worktree-statuses',
-  async (event, args: { worktrees: Worktree[]; repositories: Repository[] }) => {
+  async (
+    event,
+    args: { worktrees: Worktree[]; repositories: Repository[]; scopeId?: string }
+  ) => {
     const settings = await loadSettings()
     const azureToken = await resolveAzureToken(settings.azureToken)
     const globalTokens = {
@@ -588,9 +598,13 @@ ipcMain.handle(
       ...(azureToken ? { azure: azureToken } : {}),
     }
 
+    // Progress is tagged with the caller's scope so two projects refreshing at
+    // once each drive their own pill instead of overwriting one shared counter.
+    const scopeId = args.scopeId
     const total = args.worktrees.length
     let done = 0
-    const emitProgress = () => event.sender.send('status-progress', { current: done, total })
+    const emitProgress = () =>
+      event.sender.send('status-progress', { scopeId, current: done, total })
     emitProgress()
 
     const repositoriesById = new Map(args.repositories.map((repository) => [repository.id, repository]))
@@ -608,20 +622,19 @@ ipcMain.handle(
     const repoCount = relevantRepositories.length
     let baseDone = 0
     const emitBaseProgress = () =>
-      event.sender.send('base-status-progress', { current: baseDone, total: repoCount })
+      event.sender.send('base-status-progress', { scopeId, current: baseDone, total: repoCount })
     emitBaseProgress()
-    const baseSemaphore = createSemaphore(4)
 
     for (const repository of relevantRepositories) {
       const promise = (async () => {
-        await baseSemaphore.acquire()
+        await baseFetchSemaphore.acquire()
         try {
           return await refreshBaseBranch(
             statusCwd(repository, args.worktrees),
             repository.baseBranch || 'main'
           )
         } finally {
-          baseSemaphore.release()
+          baseFetchSemaphore.release()
         }
       })()
         .then((snapshot) => {
@@ -642,30 +655,33 @@ ipcMain.handle(
 
     // Fetch statuses with bounded concurrency — each does git + a network PR
     // lookup, so a few in flight is much faster than one at a time, while
-    // reporting progress as each completes.
-    const CONCURRENCY = 6
-    const results: (WorktreeStatus | null)[] = new Array(total).fill(null)
-    let cursor = 0
-    const worker = async () => {
-      while (cursor < total) {
-        const i = cursor++
-        const worktree = args.worktrees[i]!
+    // reporting progress as each completes. The base snapshot is awaited before
+    // taking a slot so a worktree waiting on its repo's fetch doesn't hold one.
+    const results = await Promise.all(
+      args.worktrees.map(async (worktree): Promise<WorktreeStatus | null> => {
         const repo = repositoriesById.get(worktree.repositoryId)
-        if (repo) {
-          const baseSnapshot = await basePromises.get(worktree.repositoryId)
-          results[i] = await getWorktreeStatus({
+        if (!repo) {
+          done++
+          emitProgress()
+          return null
+        }
+        const baseSnapshot = await basePromises.get(worktree.repositoryId)
+        await statusFetchSemaphore.acquire()
+        try {
+          return await getWorktreeStatus({
             worktree,
             repository: repo,
             resolvePullRequest: (branch) =>
               refreshPullRequest(branch, repo, globalTokens).catch(() => undefined),
             ...(baseSnapshot ? { baseSnapshot } : {}),
           }).catch(() => null)
+        } finally {
+          statusFetchSemaphore.release()
+          done++
+          emitProgress()
         }
-        done++
-        emitProgress()
-      }
-    }
-    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, total) }, () => worker()))
+      })
+    )
     return {
       statuses: results.filter((s): s is WorktreeStatus => s !== null),
       baseStatuses,

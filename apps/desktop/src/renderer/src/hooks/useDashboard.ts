@@ -18,18 +18,36 @@ export function defaultDirectionFor(sort: WorktreeSort): WorktreeSortDirection {
   return sort === 'name' ? 'asc' : sort === 'activity' ? 'desc' : 'asc'
 }
 
+type Progress = { current: number; total: number }
+
+/** Add or remove one id without touching the rest of the set's identity. */
+function toggleId(ids: Set<string>, id: string, present: boolean): Set<string> {
+  if (ids.has(id) === present) return ids
+  const next = new Set(ids)
+  if (present) next.add(id)
+  else next.delete(id)
+  return next
+}
+
 export interface UseDashboardReturn {
   repositories: Repository[]
   worktrees: Worktree[]
   statuses: Record<string, WorktreeStatus>
   scanProgress: ScanProgress | null
-  statusProgress: { current: number; total: number } | null
-  baseStatusProgress: { current: number; total: number } | null
+  /** Progress for the selected project only; other projects keep their own. */
+  statusProgress: Progress | null
+  baseStatusProgress: Progress | null
+  /** True while the *selected* project is refreshing. */
   loading: boolean
   scanning: boolean
   refreshingIds: Set<string>
   baseStatuses: Record<string, RepositoryBaseStatus>
+  /** True while the *selected* project's base branch is being updated. */
   baseUpdating: boolean
+  /** Every project with a refresh or base update in flight, for the sidebar. */
+  busyRepoIds: Set<string>
+  /** Every project holding an undismissed error, for the sidebar. */
+  erroredRepoIds: Set<string>
   selectedRepositoryId: string | null
   projectSearch: string
   setProjectSearch: (value: string) => void
@@ -47,10 +65,16 @@ export interface UseDashboardReturn {
   setSearch: (value: string) => void
   configRepoId: string | null
   setConfigRepoId: (value: string | null) => void
+  /** The error belonging to the selected project (or a global one). */
   actionError: string | null
   setActionError: (value: string | null) => void
+  setRepoError: (repositoryId: string, message: string | null) => void
   rescan: () => Promise<void>
+  /** Refresh one project. Never touches any other project's data or spinners. */
+  loadRepoStatuses: (repositoryId: string) => Promise<void>
+  /** Refresh the selected project. */
   loadStatuses: () => Promise<void>
+  updateRepoBase: (repositoryId: string) => Promise<void>
   updateSelectedBase: () => Promise<void>
   selectRepository: (id: string) => Promise<void>
   updateRepo: (id: string, patch: Partial<Repository>) => Promise<void>
@@ -77,6 +101,7 @@ export function useDashboard(): UseDashboardReturn {
     settings,
     setStatuses,
     setStatus,
+    removeStatuses,
     applyBranchChange,
     setSettings,
     setView,
@@ -86,49 +111,90 @@ export function useDashboard(): UseDashboardReturn {
     setScanProgress,
   } = useAppStore()
 
-  const [loading, setLoading] = useState(false)
   const [filter, setFilter] = useState<'all' | 'dirty' | 'unmerged' | 'unpushed' | 'safe'>('all')
   const [search, setSearch] = useState('')
   const [projectSearch, setProjectSearch] = useState('')
   const [configRepoId, setConfigRepoId] = useState<string | null>(null)
-  const [actionError, setActionError] = useState<string | null>(null)
   const [scanning, setScanning] = useState(false)
-  const [statusProgress, setStatusProgress] = useState<{ current: number; total: number } | null>(
-    null
-  )
-  const [baseStatusProgress, setBaseStatusProgress] = useState<{
-    current: number
-    total: number
-  } | null>(null)
   const [refreshingIds, setRefreshingIds] = useState<Set<string>>(new Set())
   const [baseStatuses, setBaseStatuses] = useState<Record<string, RepositoryBaseStatus>>({})
-  const [baseUpdating, setBaseUpdating] = useState(false)
+
+  // Everything below is keyed by repository id. A project's refresh, base
+  // update, progress and errors are its own, so starting a slow update in one
+  // project leaves every other project fully usable while it runs.
+  const [loadingRepoIds, setLoadingRepoIds] = useState<Set<string>>(new Set())
+  const [baseUpdatingRepoIds, setBaseUpdatingRepoIds] = useState<Set<string>>(new Set())
+  const [statusProgressByRepo, setStatusProgressByRepo] = useState<Record<string, Progress>>({})
+  const [baseProgressByRepo, setBaseProgressByRepo] = useState<Record<string, Progress>>({})
+  const [errorsByRepo, setErrorsByRepo] = useState<Record<string, string>>({})
+  const [globalError, setGlobalError] = useState<string | null>(null)
 
   const refreshSeq = useRef(new Map<string, number>())
+  // Per-repo request counter: a slow response from an earlier refresh must not
+  // land on top of a newer one for the same project.
+  const loadSeq = useRef(new Map<string, number>())
+  // Guards re-entry without waiting for a state round-trip.
+  const baseUpdatingRef = useRef(new Set<string>())
 
-  const loadStatuses = useCallback(async () => {
-    const current = useAppStore.getState()
-    if (current.worktrees.length === 0) return
-    setLoading(true)
-    setBaseStatusProgress(null)
-    setStatusProgress(null)
-    try {
-      const result = await api.getWorktreeStatuses({
-        worktrees: current.worktrees,
-        repositories: current.repositories,
-      })
-      setStatuses(result.statuses)
-      const nextBase: Record<string, RepositoryBaseStatus> = {}
-      for (const status of result.baseStatuses) {
-        nextBase[status.repositoryId] = status
+  const setRepoError = useCallback((repositoryId: string, message: string | null) => {
+    setErrorsByRepo((prev) => {
+      if (message === null) {
+        if (!(repositoryId in prev)) return prev
+        const { [repositoryId]: _cleared, ...rest } = prev
+        return rest
       }
-      setBaseStatuses(nextBase)
-    } finally {
-      setLoading(false)
-      setStatusProgress(null)
-      setBaseStatusProgress(null)
+      return { ...prev, [repositoryId]: message }
+    })
+  }, [])
+
+  const clearProgress = useCallback((repositoryId: string) => {
+    const drop = (prev: Record<string, Progress>) => {
+      if (!(repositoryId in prev)) return prev
+      const { [repositoryId]: _done, ...rest } = prev
+      return rest
     }
-  }, [setLoading, setStatuses, setBaseStatuses, setStatusProgress, setBaseStatusProgress])
+    setStatusProgressByRepo(drop)
+    setBaseProgressByRepo(drop)
+  }, [])
+
+  const loadRepoStatuses = useCallback(
+    async (repositoryId: string) => {
+      const state = useAppStore.getState()
+      const repository = state.repositories.find((r) => r.id === repositoryId)
+      if (!repository) return
+      const scoped = state.worktrees.filter((w) => w.repositoryId === repositoryId)
+      if (scoped.length === 0) return
+
+      const request = (loadSeq.current.get(repositoryId) ?? 0) + 1
+      loadSeq.current.set(repositoryId, request)
+      const isCurrent = () => loadSeq.current.get(repositoryId) === request
+
+      setLoadingRepoIds((ids) => toggleId(ids, repositoryId, true))
+      clearProgress(repositoryId)
+      try {
+        const result = await api.getWorktreeStatuses({
+          worktrees: scoped,
+          repositories: [repository],
+          scopeId: repositoryId,
+        })
+        if (!isCurrent()) return
+        setStatuses(
+          result.statuses,
+          scoped.map((w) => w.id)
+        )
+        const base = result.baseStatuses.find((s) => s.repositoryId === repositoryId)
+        if (base) setBaseStatuses((prev) => ({ ...prev, [repositoryId]: base }))
+      } catch (err) {
+        if (isCurrent()) setRepoError(repositoryId, String(err))
+      } finally {
+        if (isCurrent()) {
+          setLoadingRepoIds((ids) => toggleId(ids, repositoryId, false))
+          clearProgress(repositoryId)
+        }
+      }
+    },
+    [clearProgress, setRepoError, setStatuses]
+  )
 
   const refreshWorktreeStatus = useCallback(
     async (worktree: Worktree, isCancelled?: () => boolean) => {
@@ -236,46 +302,37 @@ export function useDashboard(): UseDashboardReturn {
   }, [setScanProgress])
 
   useEffect(() => {
-    const remove = api.onStatusProgress((progress) => setStatusProgress(progress))
-    return remove
+    return api.onStatusProgress(({ scopeId, current, total }) => {
+      if (!scopeId) return
+      setStatusProgressByRepo((prev) => ({ ...prev, [scopeId]: { current, total } }))
+    })
   }, [])
 
   useEffect(() => {
-    const remove = api.onBaseStatusProgress((progress) => setBaseStatusProgress(progress))
-    return remove
+    return api.onBaseStatusProgress(({ scopeId, current, total }) => {
+      if (!scopeId) return
+      setBaseProgressByRepo((prev) => ({ ...prev, [scopeId]: { current, total } }))
+    })
   }, [])
 
+  // Worktrees we have already kicked off a status load for. Removing a worktree
+  // (a delete in one project) leaves every id here untouched, so it no longer
+  // drags every other project through a fresh round of git and network calls —
+  // only genuinely new worktrees trigger a load, and only for their own project.
+  const loadedWorktreeIds = useRef(new Set<string>())
+
   useEffect(() => {
-    if (worktrees.length === 0) return
-    let cancelled = false
-    const run = async () => {
-      const current = useAppStore.getState()
-      setLoading(true)
-      try {
-        const result = await api.getWorktreeStatuses({
-          worktrees: current.worktrees,
-          repositories: current.repositories,
-        })
-        if (cancelled) return
-        setStatuses(result.statuses)
-        const nextBase: Record<string, RepositoryBaseStatus> = {}
-        for (const status of result.baseStatuses) {
-          nextBase[status.repositoryId] = status
-        }
-        setBaseStatuses(nextBase)
-      } finally {
-        setLoading(false)
-        setStatusProgress(null)
-      }
+    const stale = new Set<string>()
+    for (const w of worktrees) {
+      if (!loadedWorktreeIds.current.has(w.id)) stale.add(w.repositoryId)
     }
-    run()
-    return () => {
-      cancelled = true
-    }
-  }, [worktrees, setBaseStatuses, setLoading, setStatuses, setStatusProgress])
+    if (stale.size === 0) return
+    for (const w of worktrees) loadedWorktreeIds.current.add(w.id)
+    for (const repositoryId of stale) void loadRepoStatuses(repositoryId)
+  }, [worktrees, loadRepoStatuses])
 
   const rescan = useCallback(async () => {
-    if (scanning || loading) return
+    if (scanning) return
     const roots = new Set<string>()
     for (const dir of settings?.watchedDirectories ?? []) {
       if (dir.trim().length > 0) roots.add(dir)
@@ -287,7 +344,7 @@ export function useDashboard(): UseDashboardReturn {
 
     setScanning(true)
     setScanProgress({ total: roots.size, current: 0, found: 0 })
-    setActionError(null)
+    setGlobalError(null)
     console.info('[worktree] rescan:start', { roots: roots.size })
     try {
       const result = await api.discoverWorktrees({ roots: Array.from(roots), maxDepth: 5 })
@@ -325,6 +382,9 @@ export function useDashboard(): UseDashboardReturn {
 
       await Promise.all([api.setRepositories(mergedRepos), api.setWorktrees(mergedWorktrees)])
       setRepositories(mergedRepos)
+      // A rescan is the one deliberately global action: forget what we've loaded
+      // so the effect below re-reads every project's status from disk.
+      loadedWorktreeIds.current.clear()
       setWorktrees(mergedWorktrees)
       console.info('[worktree] rescan:done', {
         repositories: mergedRepos.length,
@@ -332,14 +392,12 @@ export function useDashboard(): UseDashboardReturn {
       })
     } catch (err) {
       console.error('[worktree] rescan:error', err)
-      setActionError(String(err))
+      setGlobalError(String(err))
     } finally {
       setScanning(false)
       setScanProgress(null)
-      setLoading(false)
     }
   }, [
-    loading,
     scanning,
     settings,
     repositories,
@@ -348,8 +406,7 @@ export function useDashboard(): UseDashboardReturn {
     setWorktrees,
     setScanning,
     setScanProgress,
-    setActionError,
-    setLoading,
+    setGlobalError,
   ])
 
   const persistRepos = useCallback(
@@ -414,23 +471,44 @@ export function useDashboard(): UseDashboardReturn {
     [repositories, selectedRepositoryId]
   )
 
+  // Scoped to one project end to end: the lock, the error and the follow-up
+  // refresh all belong to `repositoryId`, so updating main in one project while
+  // deleting a worktree in another is two independent operations.
+  const updateRepoBase = useCallback(
+    async (repositoryId: string) => {
+      const repository = useAppStore.getState().repositories.find((r) => r.id === repositoryId)
+      if (!repository) return
+      if (baseUpdatingRef.current.has(repositoryId)) return
+
+      baseUpdatingRef.current.add(repositoryId)
+      setBaseUpdatingRepoIds((ids) => toggleId(ids, repositoryId, true))
+      setRepoError(repositoryId, null)
+      try {
+        const result = await api.updateBaseBranch({
+          path: repository.path,
+          baseBranch: repository.baseBranch || 'main',
+        })
+        if (!result.success) setRepoError(repositoryId, result.output)
+        await loadRepoStatuses(repositoryId)
+      } catch (err) {
+        setRepoError(repositoryId, String(err))
+      } finally {
+        baseUpdatingRef.current.delete(repositoryId)
+        setBaseUpdatingRepoIds((ids) => toggleId(ids, repositoryId, false))
+      }
+    },
+    [loadRepoStatuses, setRepoError]
+  )
+
   const updateSelectedBase = useCallback(async () => {
-    if (!selectedRepo || baseUpdating) return
-    setBaseUpdating(true)
-    setActionError(null)
-    try {
-      const result = await api.updateBaseBranch({
-        path: selectedRepo.path,
-        baseBranch: selectedRepo.baseBranch || 'main',
-      })
-      if (!result.success) setActionError(result.output)
-      await loadStatuses()
-    } catch (err) {
-      setActionError(String(err))
-    } finally {
-      setBaseUpdating(false)
-    }
-  }, [selectedRepo, baseUpdating, loadStatuses, setActionError, setBaseUpdating])
+    if (!selectedRepositoryId) return
+    await updateRepoBase(selectedRepositoryId)
+  }, [selectedRepositoryId, updateRepoBase])
+
+  const loadStatuses = useCallback(async () => {
+    if (!selectedRepositoryId) return
+    await loadRepoStatuses(selectedRepositoryId)
+  }, [selectedRepositoryId, loadRepoStatuses])
 
   const effectiveEditor = selectedRepo?.preferredEditor || settings?.defaultEditor || 'cursor'
   const sortMode = settings?.worktreeSort ?? 'activity'
@@ -449,10 +527,12 @@ export function useDashboard(): UseDashboardReturn {
       try {
         await api.setSettings(next)
       } catch (err) {
-        setActionError(`Could not save worktree ordering: ${String(err)}`)
+        // Sort order is an app-wide setting, not a project's, so this failure
+        // belongs to the global channel rather than whichever repo is selected.
+        setGlobalError(`Could not save worktree ordering: ${String(err)}`)
       }
     },
-    [settings, setSettings, setActionError]
+    [settings, setSettings, setGlobalError]
   )
 
   const repoWorktrees = useMemo(() => {
@@ -521,10 +601,12 @@ export function useDashboard(): UseDashboardReturn {
           missing: true,
         })
         if (!res.success) {
-          setActionError(res.error || 'Failed to prune worktree')
+          setRepoError(repo.id, res.error || 'Failed to prune worktree')
           return
         }
+        const pruned = worktrees.filter((x) => x.repositoryId === repo.id && x.prunable)
         const next = worktrees.filter((x) => !(x.repositoryId === repo.id && x.prunable))
+        removeStatuses(pruned.map((x) => x.id))
         setWorktrees(next)
         await api.setWorktrees(next)
         return
@@ -561,29 +643,70 @@ export function useDashboard(): UseDashboardReturn {
         deleteBranch: shouldDeleteBranch,
       })
       if (!res.success) {
-        setActionError(res.error || 'Failed to remove worktree')
+        setRepoError(repo.id, res.error || 'Failed to remove worktree')
         return
       }
-      if (res.branchError) setActionError(res.branchError)
+      if (res.branchError) setRepoError(repo.id, res.branchError)
+      // Drop just this worktree's row and status. Nothing else in this project
+      // changed and nothing at all changed in the others, so no refresh fires.
       const next = worktrees.filter((x) => x.path !== w.path)
+      removeStatuses([w.id])
       setWorktrees(next)
       await api.setWorktrees(next)
     },
-    [repositories, setActionError, setWorktrees, statuses, worktrees]
+    [repositories, removeStatuses, setRepoError, setWorktrees, statuses, worktrees]
   )
-
-  const onActionError = useCallback((message: string) => {
-    setActionError(message)
-  }, [setActionError])
 
   const saveRepository = useCallback(
     async (repo: Repository) => {
       const next = repositories.map((r) => (r.id === repo.id ? repo : r))
       await persistRepos(next)
       setConfigRepoId(null)
-      await loadStatuses()
+      // Only the edited project's settings changed (base branch, token, …).
+      await loadRepoStatuses(repo.id)
     },
-    [repositories, persistRepos, setConfigRepoId, loadStatuses]
+    [repositories, persistRepos, setConfigRepoId, loadRepoStatuses]
+  )
+
+  // Everything the chrome renders is the selected project's slice of the
+  // per-repo maps — switching projects switches which spinner you're watching,
+  // it never merges two projects' progress into one indicator.
+  const loading = selectedRepositoryId ? loadingRepoIds.has(selectedRepositoryId) : false
+  const baseUpdating = selectedRepositoryId ? baseUpdatingRepoIds.has(selectedRepositoryId) : false
+  const statusProgress = selectedRepositoryId
+    ? (statusProgressByRepo[selectedRepositoryId] ?? null)
+    : null
+  const baseStatusProgress = selectedRepositoryId
+    ? (baseProgressByRepo[selectedRepositoryId] ?? null)
+    : null
+  const actionError =
+    globalError ?? (selectedRepositoryId ? (errorsByRepo[selectedRepositoryId] ?? null) : null)
+
+  const busyRepoIds = useMemo(
+    () => new Set([...loadingRepoIds, ...baseUpdatingRepoIds]),
+    [loadingRepoIds, baseUpdatingRepoIds]
+  )
+  const erroredRepoIds = useMemo(() => new Set(Object.keys(errorsByRepo)), [errorsByRepo])
+
+  // Dismissing the banner clears whichever error it was showing.
+  const setActionError = useCallback(
+    (value: string | null) => {
+      if (value === null) {
+        setGlobalError(null)
+        if (selectedRepositoryId) setRepoError(selectedRepositoryId, null)
+        return
+      }
+      if (selectedRepositoryId) setRepoError(selectedRepositoryId, value)
+      else setGlobalError(value)
+    },
+    [selectedRepositoryId, setRepoError]
+  )
+
+  const onActionError = useCallback(
+    (message: string) => {
+      setActionError(message)
+    },
+    [setActionError]
   )
 
   return {
@@ -598,6 +721,8 @@ export function useDashboard(): UseDashboardReturn {
     refreshingIds,
     baseStatuses,
     baseUpdating,
+    busyRepoIds,
+    erroredRepoIds,
     selectedRepositoryId,
     projectSearch,
     setProjectSearch,
@@ -617,8 +742,11 @@ export function useDashboard(): UseDashboardReturn {
     setConfigRepoId,
     actionError,
     setActionError,
+    setRepoError,
     rescan,
+    loadRepoStatuses,
     loadStatuses,
+    updateRepoBase,
     updateSelectedBase,
     selectRepository,
     updateRepo,

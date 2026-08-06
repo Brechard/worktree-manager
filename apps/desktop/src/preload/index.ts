@@ -39,6 +39,8 @@ const api = {
   getWorktreeStatuses: (args: {
     worktrees: Worktree[]
     repositories: Repository[]
+    /** Echoed back on the progress events so concurrent refreshes stay apart. */
+    scopeId?: string
   }): Promise<WorktreeStatusesResult> => ipcRenderer.invoke('get-worktree-statuses', args),
 
   getWorktreeStatus: (args: {
@@ -175,19 +177,23 @@ const api = {
   },
 
   onStatusProgress: (
-    callback: (progress: { current: number; total: number }) => void
+    callback: (progress: { scopeId?: string; current: number; total: number }) => void
   ): (() => void) => {
-    const listener = (_: unknown, progress: { current: number; total: number }) =>
-      callback(progress)
+    const listener = (
+      _: unknown,
+      progress: { scopeId?: string; current: number; total: number }
+    ) => callback(progress)
     ipcRenderer.on('status-progress', listener)
     return () => ipcRenderer.removeListener('status-progress', listener)
   },
 
   onBaseStatusProgress: (
-    callback: (progress: { current: number; total: number }) => void
+    callback: (progress: { scopeId?: string; current: number; total: number }) => void
   ): (() => void) => {
-    const listener = (_: unknown, progress: { current: number; total: number }) =>
-      callback(progress)
+    const listener = (
+      _: unknown,
+      progress: { scopeId?: string; current: number; total: number }
+    ) => callback(progress)
     ipcRenderer.on('base-status-progress', listener)
     return () => ipcRenderer.removeListener('base-status-progress', listener)
   },

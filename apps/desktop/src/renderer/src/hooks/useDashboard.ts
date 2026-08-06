@@ -551,11 +551,20 @@ export function useDashboard(): UseDashboardReturn {
         if (!ok) return
       }
 
-      const res = await window.api.removeWorktree({ path: w.path, repoPath: repo.path })
+      const branch = status?.branch ?? w.branch
+      const shouldDeleteBranch =
+        status?.mergedIntoBase === true && branch !== 'HEAD' && branch !== status.baseBranch
+      const res = await window.api.removeWorktree({
+        path: w.path,
+        repoPath: repo.path,
+        branch,
+        deleteBranch: shouldDeleteBranch,
+      })
       if (!res.success) {
         setActionError(res.error || 'Failed to remove worktree')
         return
       }
+      if (res.branchError) setActionError(res.branchError)
       const next = worktrees.filter((x) => x.path !== w.path)
       setWorktrees(next)
       await api.setWorktrees(next)

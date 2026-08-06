@@ -141,7 +141,9 @@ const api = {
     path: string
     repoPath: string
     missing?: boolean
-  }): Promise<{ success: boolean; error?: string }> =>
+    branch?: string
+    deleteBranch?: boolean
+  }): Promise<{ success: boolean; error?: string; branchError?: string }> =>
     ipcRenderer.invoke('remove-worktree', args),
   openExternal: (url: string): Promise<void> => ipcRenderer.invoke('open-external', url),
 

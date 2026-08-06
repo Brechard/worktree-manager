@@ -96,6 +96,15 @@ export async function removeWorktree(
   return { success: exitCode === 0, output: stdout || stderr }
 }
 
+/** Delete a local branch only when Git considers it fully merged. */
+export async function deleteLocalBranch(
+  cwd: string,
+  branch: string
+): Promise<{ success: boolean; output: string }> {
+  const { stdout, stderr, exitCode } = await runGit(cwd, ['branch', '-d', '--', branch])
+  return { success: exitCode === 0, output: stdout || stderr }
+}
+
 export interface WorktreeEntry {
   path: string
   head?: string

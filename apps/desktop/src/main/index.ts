@@ -18,6 +18,7 @@ import {
   checkoutBranch,
   commitWorktree,
   detectProviderToken,
+  deleteLocalBranch,
   discardFile,
   discoverRepositories,
   evaluateSafety,
@@ -927,7 +928,19 @@ ipcMain.handle(
   'remove-worktree',
   async (
     _,
-    { path, repoPath, missing }: { path: string; repoPath: string; missing?: boolean }
+    {
+      path,
+      repoPath,
+      missing,
+      branch,
+      deleteBranch,
+    }: {
+      path: string
+      repoPath: string
+      missing?: boolean
+      branch?: string
+      deleteBranch?: boolean
+    }
   ) => {
     try {
       // Present worktree: move its files to the system Trash (recoverable).
@@ -944,6 +957,15 @@ ipcMain.handle(
       // Deregister from git so no prunable "ghost" entry lingers (this also clears
       // any other already-stale worktrees in the same repo).
       if (repoPath) await pruneWorktrees(repoPath).catch(() => undefined)
+      if (repoPath && deleteBranch && branch && branch !== 'HEAD') {
+        const result = await deleteLocalBranch(repoPath, branch)
+        if (!result.success) {
+          return {
+            success: true,
+            branchError: `Worktree removed, but the local branch could not be deleted: ${result.output}`,
+          }
+        }
+      }
       return { success: true }
     } catch (err) {
       return { success: false, error: String(err) }

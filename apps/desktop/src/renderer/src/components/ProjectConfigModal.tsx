@@ -5,6 +5,7 @@ import { useAppStore } from '../store'
 import { api } from '../api'
 import { editorLabel, editorOptionsForIds, sortEditorOptions, shortenPath } from '../lib/paths'
 import { cn } from '../lib/utils'
+import { ShellEditor } from './ShellEditor'
 
 interface ProjectConfigModalProps {
   repository: Repository
@@ -250,7 +251,7 @@ export function ProjectConfigModal({ repository, onClose, onSave }: ProjectConfi
         aria-label="Close dialog"
       />
       <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-4">
-        <div className="pointer-events-auto max-h-[90vh] w-full max-w-lg overflow-auto rounded-2xl border border-border bg-card p-6 shadow-lg">
+        <div className="pointer-events-auto max-h-[90vh] w-full max-w-3xl overflow-auto rounded-2xl border border-border bg-card p-6 shadow-lg">
           <div className="mb-4 flex items-center justify-between">
             <div>
               <h2 className="text-lg font-semibold">Project settings</h2>
@@ -267,6 +268,13 @@ export function ProjectConfigModal({ repository, onClose, onSave }: ProjectConfi
           </div>
 
           <div className="space-y-5">
+            <CleanupSection
+              preDeleteCommand={preDeleteCommand}
+              setPreDeleteCommand={setPreDeleteCommand}
+              preDeleteTimeout={preDeleteTimeout}
+              setPreDeleteTimeout={setPreDeleteTimeout}
+            />
+
             <GeneralSection
               baseBranch={baseBranch}
               setBaseBranch={setBaseBranch}
@@ -282,13 +290,6 @@ export function ProjectConfigModal({ repository, onClose, onSave }: ProjectConfi
               setImageUrl={setImageUrl}
               fileInputRef={fileInputRef}
               handleImageFile={handleImageFile}
-            />
-
-            <CleanupSection
-              preDeleteCommand={preDeleteCommand}
-              setPreDeleteCommand={setPreDeleteCommand}
-              preDeleteTimeout={preDeleteTimeout}
-              setPreDeleteTimeout={setPreDeleteTimeout}
             />
 
             <ProviderSection
@@ -510,52 +511,48 @@ function CleanupSection({
   setPreDeleteTimeout,
 }: CleanupSectionProps) {
   return (
-    <section className="space-y-3 border-t border-border pt-5">
-      <div>
-        <h3 className="text-sm font-semibold">Cleanup on delete</h3>
-        <p className="mt-0.5 text-xs text-muted">
-          Runs in a worktree just before it is moved to Trash — release whatever that worktree
-          allocated outside git, like its own Docker stack, volumes and ports.
-        </p>
+    <section className="space-y-3">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <h3 className="text-sm font-semibold">Cleanup on delete</h3>
+          <p className="mt-0.5 text-xs text-muted">
+            Runs in a worktree just before it is moved to Trash — release whatever that worktree
+            allocated outside git, like its own Docker stack, volumes and ports.
+          </p>
+        </div>
+        <label
+          htmlFor="pre-delete-timeout"
+          className="flex shrink-0 items-center gap-2 text-xs text-muted"
+        >
+          Timeout
+          <input
+            id="pre-delete-timeout"
+            type="number"
+            min={1}
+            value={preDeleteTimeout}
+            onChange={(e) => setPreDeleteTimeout(e.target.value)}
+            placeholder="600"
+            className="w-20 rounded-md border border-border bg-background px-2 py-1 text-right text-xs text-foreground outline-none focus:border-primary"
+          />
+          s
+        </label>
       </div>
 
-      <div>
-        <label htmlFor="pre-delete-command" className="mb-1 block text-sm font-medium">
-          Command
-        </label>
-        <textarea
-          id="pre-delete-command"
-          value={preDeleteCommand}
-          onChange={(e) => setPreDeleteCommand(e.target.value)}
-          rows={3}
-          spellCheck={false}
-          placeholder="Leave empty to skip"
-          className="w-full resize-y rounded-md border border-border bg-background px-3 py-2 font-mono text-xs outline-none focus:border-primary"
-        />
-        <p className="mt-1.5 text-[11px] leading-relaxed text-muted">
-          Runs through your login shell, with the worktree as the working directory.{' '}
-          <code className="font-mono">$WORKTREE_PATH</code>,{' '}
-          <code className="font-mono">$WORKTREE_BRANCH</code>,{' '}
-          <code className="font-mono">$REPO_PATH</code> and{' '}
-          <code className="font-mono">$REPO_NAME</code> are available. If it fails you&rsquo;ll be
-          asked whether to delete anyway.
-        </p>
-      </div>
+      <ShellEditor
+        id="pre-delete-command"
+        value={preDeleteCommand}
+        onChange={setPreDeleteCommand}
+        placeholder="Leave empty to skip"
+      />
 
-      <div>
-        <label htmlFor="pre-delete-timeout" className="mb-1 block text-sm font-medium">
-          Timeout (seconds)
-        </label>
-        <input
-          id="pre-delete-timeout"
-          type="number"
-          min={1}
-          value={preDeleteTimeout}
-          onChange={(e) => setPreDeleteTimeout(e.target.value)}
-          placeholder="600"
-          className="w-32 rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
-        />
-      </div>
+      <p className="text-[11px] leading-relaxed text-muted">
+        Runs through your login shell, with the worktree as the working directory.{' '}
+        <code className="font-mono text-warning">$WORKTREE_PATH</code>,{' '}
+        <code className="font-mono text-warning">$WORKTREE_BRANCH</code>,{' '}
+        <code className="font-mono text-warning">$REPO_PATH</code> and{' '}
+        <code className="font-mono text-warning">$REPO_NAME</code> are available. If it fails
+        you&rsquo;ll be asked whether to delete anyway.
+      </p>
     </section>
   )
 }

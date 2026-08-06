@@ -13,6 +13,7 @@ import { useAppStore } from '../store'
 import { api } from '../api'
 import { shortenPath } from '../lib/paths'
 import { groupWorktrees, isSafeToDelete, sortWorktrees } from '../lib/worktreeSorting'
+import { mergeDiscoveredRepository } from '../lib/repositories'
 
 export function defaultDirectionFor(sort: WorktreeSort): WorktreeSortDirection {
   return sort === 'name' ? 'asc' : sort === 'activity' ? 'desc' : 'asc'
@@ -362,19 +363,9 @@ export function useDashboard(): UseDashboardReturn {
       const existingById = new Map(repositories.map((r) => [r.id, r]))
       const mergedRepos: Repository[] = []
       for (const r of result.repositories) {
-        const prev = existingByPath.get(r.path) || existingById.get(r.id)
-        if (!prev) {
-          mergedRepos.push(r)
-          continue
-        }
-        mergedRepos.push({
-          ...r,
-          favorite: prev.favorite ?? r.favorite,
-          preferredEditor: prev.preferredEditor ?? r.preferredEditor,
-          imageUrl: prev.imageUrl ?? r.imageUrl,
-          baseBranch: r.baseBranch || prev.baseBranch,
-          provider: prev.provider?.personalAccessToken ? prev.provider : (r.provider ?? prev.provider),
-        })
+        mergedRepos.push(
+          mergeDiscoveredRepository(r, existingByPath.get(r.path) || existingById.get(r.id))
+        )
       }
 
       const kept: Worktree[] = []

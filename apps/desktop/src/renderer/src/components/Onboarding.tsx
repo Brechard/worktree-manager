@@ -3,6 +3,7 @@ import { FolderPlus, Loader2, Search, X } from 'lucide-react'
 import type { ScanResult, ScanProgress } from '@worktree/contracts'
 import { api } from '../api'
 import { useAppStore } from '../store'
+import { mergeDiscoveredRepository } from '../lib/repositories'
 import { cn } from '../lib/utils'
 import { shortenPath } from '../lib/paths'
 import { TitleBar } from './TitleBar'
@@ -62,24 +63,11 @@ export function Onboarding() {
     const existingById = new Map(existing.map((r) => [r.id, r]))
     const settings = useAppStore.getState().settings
 
-    // Preserve favorites / preferred editor / tokens when re-scanning
+    // Re-importing a project must not reset what the user configured for it.
     const repos: typeof scanResult.repositories = []
     for (const r of scanResult.repositories) {
       if (!selectedRepoIds.has(r.id)) continue
-      const prev = existingByPath.get(r.path) || existingById.get(r.id)
-      if (!prev) {
-        repos.push(r)
-      } else {
-        repos.push({
-          ...r,
-          favorite: prev.favorite ?? r.favorite,
-          preferredEditor: prev.preferredEditor ?? r.preferredEditor,
-          baseBranch: prev.baseBranch || r.baseBranch,
-          provider: prev.provider?.personalAccessToken
-            ? prev.provider
-            : (r.provider ?? prev.provider),
-        })
-      }
+      repos.push(mergeDiscoveredRepository(r, existingByPath.get(r.path) || existingById.get(r.id)))
     }
     const worktrees: typeof scanResult.worktrees = []
     for (const w of scanResult.worktrees) {

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { Repository, ScanProgress, Worktree } from '@worktree/contracts'
 import { useAppStore } from './store'
+import { mergeDiscoveredRepository } from './lib/repositories'
 import { api } from './api'
 import { Onboarding } from './components/Onboarding'
 import { Dashboard } from './components/Dashboard'
@@ -55,21 +56,9 @@ export default function App() {
               const existingById = new Map(existingRepos.map((r) => [r.id, r]))
               const mergedRepos: Repository[] = []
               for (const r of result.repositories) {
-                const prev = existingByPath.get(r.path) || existingById.get(r.id)
-                if (!prev) {
-                  mergedRepos.push(r)
-                  continue
-                }
-                mergedRepos.push({
-                  ...r,
-                  favorite: prev.favorite ?? r.favorite,
-                  preferredEditor: prev.preferredEditor ?? r.preferredEditor,
-                  imageUrl: prev.imageUrl ?? r.imageUrl,
-                  baseBranch: r.baseBranch || prev.baseBranch,
-                  provider: prev.provider?.personalAccessToken
-                    ? prev.provider
-                    : (r.provider ?? prev.provider),
-                })
+                mergedRepos.push(
+                  mergeDiscoveredRepository(r, existingByPath.get(r.path) || existingById.get(r.id))
+                )
               }
 
               const kept: Worktree[] = []

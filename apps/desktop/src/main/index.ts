@@ -11,7 +11,7 @@ import {
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { existsSync } from 'node:fs'
-import { readFile, writeFile, mkdir, copyFile, stat, readdir, unlink } from 'node:fs/promises'
+import { readFile, writeFile, mkdir, copyFile, stat, readdir, unlink, rm } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { z } from 'zod'
 import {
@@ -31,15 +31,17 @@ import {
   getHeadCommit,
   getWorktreeDetails,
   getWorktreeStatus,
+  measureWorktreeDisk,
   mergeBranch,
   parseProviderFromRemoteUrl,
   pruneWorktrees,
-  pullWorktree,
   pushWorktree,
-  rebaseWorktree,
+  reclaimWorktreeSpace,
   refreshPullRequest,
   refreshBaseBranch,
+  resolveWorkingDirectory,
   runCommand,
+  runProjectCommand,
   syncWithBase,
   toRepositoryBaseStatus,
   updateBaseBranch,
@@ -47,6 +49,7 @@ import {
 } from '@worktree/shared'
 import {
   appSettingsSchema,
+  cleanupCandidacy,
   repositorySchema,
   worktreeSchema,
   type AppSettings,
@@ -55,8 +58,10 @@ import {
   type ScanProgress,
   type ScanResult,
   type SyncBaseMode,
+  type SyncTarget,
   type Worktree,
   type WorktreeDetails,
+  type WorktreeDiskUsage,
   type WorktreeStatus,
 } from '@worktree/contracts'
 
@@ -869,10 +874,6 @@ ipcMain.handle(
   }
 )
 
-ipcMain.handle('pull-worktree', async (_, path: string) => {
-  return pullWorktree(path)
-})
-
 ipcMain.handle('update-base-branch', async (_, args: { path: string; baseBranch: string }) => {
   return updateBaseBranch(args.path, args.baseBranch)
 })
@@ -912,18 +913,15 @@ ipcMain.handle(
 
 ipcMain.handle(
   'sync-with-base',
-  async (_, args: { path: string; baseBranch: string; mode?: SyncBaseMode }) => {
+  async (_, args: { path: string; baseBranch: string; target?: SyncTarget; mode?: SyncBaseMode }) => {
     return syncWithBase({
       cwd: args.path,
       baseBranch: args.baseBranch,
+      ...(args.target ? { target: args.target } : {}),
       ...(args.mode ? { mode: args.mode } : {}),
     })
   }
 )
-
-ipcMain.handle('rebase-worktree', async (_, path: string) => {
-  return rebaseWorktree(path)
-})
 
 ipcMain.handle('push-worktree', async (_, path: string) => {
   return pushWorktree(path)
@@ -962,10 +960,60 @@ ipcMain.handle('open-in-editor', async (_, { path, editor }: { path: string; edi
 
 ipcMain.handle(
   'open-in-terminal',
-  async (_, { path, terminal }: { path: string; terminal?: string }) => {
+  async (
+    _,
+    {
+      path,
+      terminal,
+      subdirectory,
+    }: { path: string; terminal?: string; subdirectory?: string }
+  ) => {
     const settings = await loadSettings()
     const term = terminal || settings.defaultTerminal
-    return openTerminalAt(path, term)
+    // Projects that keep their app in a subfolder want the shell to land there,
+    // not at the worktree root they never work in.
+    return openTerminalAt(resolveWorkingDirectory(path, subdirectory), term)
+  }
+)
+
+// One of a project's custom actions, for one worktree. The terminal app comes
+// from Settings here rather than the renderer so an action and the row's
+// terminal button always open the same thing.
+ipcMain.handle(
+  'run-project-action',
+  async (
+    _,
+    args: {
+      command: string
+      worktreePath: string
+      repoPath: string
+      branch?: string
+      repoName?: string
+      subdirectory?: string
+      mode: 'terminal' | 'background'
+      timeoutSeconds?: number
+      label?: string
+    }
+  ) => {
+    try {
+      const settings = await loadSettings()
+      return await runProjectCommand({
+        command: args.command,
+        context: {
+          worktreePath: args.worktreePath,
+          repoPath: args.repoPath,
+          ...(args.branch ? { branch: args.branch } : {}),
+          ...(args.repoName ? { repoName: args.repoName } : {}),
+        },
+        mode: args.mode,
+        ...(args.subdirectory ? { subdirectory: args.subdirectory } : {}),
+        ...(settings.defaultTerminal ? { terminal: settings.defaultTerminal } : {}),
+        ...(args.timeoutSeconds ? { timeoutSeconds: args.timeoutSeconds } : {}),
+        ...(args.label ? { label: args.label } : {}),
+      })
+    } catch (err) {
+      return { success: false, output: String(err) }
+    }
   }
 )
 
@@ -984,26 +1032,98 @@ ipcMain.handle(
       missing,
       branch,
       deleteBranch,
+      permanent,
+      worktree,
+      repository,
+      expectedStatus,
     }: {
       path: string
       repoPath: string
       missing?: boolean
       branch?: string
       deleteBranch?: boolean
+      /** Delete outright rather than move to Trash. Used by the disk cleanup
+       *  flow: Trash preserves recovery, but it does not free disk space. */
+      permanent?: boolean
+      /** Snapshot confirmed in the UI. Permanent deletion is refused unless a
+       *  fresh main-process status still describes the same landed branch. */
+      worktree?: Worktree
+      repository?: Repository
+      expectedStatus?: WorktreeStatus
     }
   ) => {
     try {
-      // Present worktree: move its files to the system Trash (recoverable).
-      // Missing/stale worktree: nothing on disk to trash — skip straight to prune.
+      // Any automatic branch deletion is destructive even when the directory
+      // itself goes to Trash. Revalidate it in main; renderer status is only a
+      // display snapshot and can change before the click reaches IPC.
+      const requiresSafetyValidation = permanent || deleteBranch === true
+      if (requiresSafetyValidation) {
+        if (!worktree || !repository || !expectedStatus) {
+          return { success: false, error: 'Automatic branch deletion requires a fresh safety check.' }
+        }
+        if (path !== worktree.path || repoPath !== repository.path) {
+          return { success: false, error: 'The deletion target does not match the verified worktree.' }
+        }
+        const settings = await loadSettings()
+        const azureToken = await resolveAzureToken(settings.azureToken)
+        const globalTokens = {
+          ...(settings.githubToken ? { github: settings.githubToken } : {}),
+          ...(azureToken ? { azure: azureToken } : {}),
+        }
+        const baseSnapshot = await refreshBaseBranch(
+          statusCwd(repository, [worktree]),
+          repository.baseBranch || 'main'
+        ).catch(() => undefined)
+        const fresh = await getWorktreeStatus({
+          worktree,
+          repository,
+          resolvePullRequest: (liveBranch) =>
+            refreshPullRequest(liveBranch, repository, globalTokens).catch(() => undefined),
+          ...(baseSnapshot ? { baseSnapshot } : {}),
+        })
+        const expectedBranch = expectedStatus.branch ?? worktree.branch
+        const freshBranch = fresh.branch ?? worktree.branch
+        const sameSnapshot =
+          freshBranch === expectedBranch &&
+          fresh.headCommit === expectedStatus.headCommit &&
+          fresh.dirty === expectedStatus.dirty &&
+          fresh.staged === expectedStatus.staged &&
+          fresh.hasUntracked === expectedStatus.hasUntracked &&
+          fresh.ahead === expectedStatus.ahead &&
+          fresh.unpushed === expectedStatus.unpushed
+        const freshCandidacy = cleanupCandidacy(worktree, fresh)
+        // Permanent cleanup is reserved for the plain, clean case. A review
+        // candidate can still be removed to Trash, but its uncommitted,
+        // untracked or unpushed contents must remain recoverable.
+        if (!sameSnapshot || freshCandidacy?.kind !== 'ready') {
+          return {
+            success: false,
+            error:
+              'This worktree changed after the cleanup list was opened. It was kept; refresh and review it again.',
+          }
+        }
+        // Branch deletion below must use the status we just proved, not the
+        // renderer's snapshot. Squash-merged PRs are landed even though their
+        // head is not an ancestor of base.
+        branch = freshBranch
+        deleteBranch = freshCandidacy.kind === 'ready'
+      }
+
+      // Present worktree: ordinary row deletes go to the system Trash and stay
+      // recoverable. Explicit disk cleanup deletes outright so its promised
+      // reclaimed bytes are real immediately.
+      // Missing/stale worktree: nothing on disk to remove — skip straight to prune.
       if (!missing) {
         try {
-          await shell.trashItem(path)
+          if (permanent) await rm(path, { recursive: true, force: true })
+          else await shell.trashItem(path)
         } catch (err) {
           // If it failed only because the folder is already gone, fall through to
           // prune so git's stale record still gets cleaned up.
           if (existsSync(path)) return { success: false, error: String(err) }
         }
       }
+      invalidateDiskUsage(path)
       // Deregister from git so no prunable "ghost" entry lingers (this also clears
       // any other already-stale worktrees in the same repo).
       if (repoPath) await pruneWorktrees(repoPath).catch(() => undefined)
@@ -1019,6 +1139,77 @@ ipcMain.handle(
       return { success: true }
     } catch (err) {
       return { success: false, error: String(err) }
+    }
+  }
+)
+
+// Measuring a worktree walks its whole tree, so results are held per path and
+// only re-measured on request (after a reclaim, or when the user asks). The
+// cache also collapses the burst of parallel calls a project's list makes when
+// several rows ask for the same path at once.
+const diskUsageCache = new Map<string, WorktreeDiskUsage>()
+const diskUsageInFlight = new Map<string, Promise<WorktreeDiskUsage>>()
+// Incrementing a path invalidates both its cached result and every measurement
+// already walking it. A stale promise may still finish, but it cannot put its
+// old number back after a reclaim/removal or overwrite a newer refresh.
+const diskUsageGeneration = new Map<string, number>()
+
+function invalidateDiskUsage(path: string): void {
+  diskUsageCache.delete(path)
+  diskUsageGeneration.set(path, (diskUsageGeneration.get(path) ?? 0) + 1)
+}
+
+ipcMain.handle(
+  'measure-worktree-disk',
+  async (
+    _,
+    { worktreeId, path, refresh }: { worktreeId: string; path: string; refresh?: boolean }
+  ): Promise<WorktreeDiskUsage> => {
+    if (!refresh) {
+      const cached = diskUsageCache.get(path)
+      if (cached) return { ...cached, worktreeId }
+      const pending = diskUsageInFlight.get(path)
+      if (pending) return pending.then((usage) => ({ ...usage, worktreeId }))
+    }
+
+    // A forced refresh supersedes any older walk of the same path.
+    if (refresh) invalidateDiskUsage(path)
+    const generation = diskUsageGeneration.get(path) ?? 0
+    let work: Promise<WorktreeDiskUsage>
+    work = measureWorktreeDisk(path)
+      .then((measurement) => {
+        const usage: WorktreeDiskUsage = {
+          worktreeId,
+          path,
+          totalBytes: measurement.totalBytes,
+          reclaimableBytes: measurement.reclaimableBytes,
+          entries: measurement.entries,
+          measuredAt: Date.now(),
+          ...(measurement.error ? { error: measurement.error } : {}),
+        }
+        if (!usage.error && diskUsageGeneration.get(path) === generation) {
+          diskUsageCache.set(path, usage)
+        }
+        return usage
+      })
+      .finally(() => {
+        if (diskUsageInFlight.get(path) === work) diskUsageInFlight.delete(path)
+      })
+
+    diskUsageInFlight.set(path, work)
+    return work
+  }
+)
+
+ipcMain.handle(
+  'reclaim-worktree-space',
+  async (_, { path, entries }: { path: string; entries: string[] }) => {
+    try {
+      const result = await reclaimWorktreeSpace(path, entries)
+      invalidateDiskUsage(path)
+      return result
+    } catch (err) {
+      return { freedBytes: 0, removed: [], errors: [String(err)] }
     }
   }
 )

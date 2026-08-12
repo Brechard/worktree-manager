@@ -1,8 +1,17 @@
 import { useEffect, useReducer, useRef, useState, type ChangeEvent, type MouseEvent } from 'react'
-import { AlertTriangle, Image as ImageIcon, KeyRound, Loader2, Sparkles, X } from 'lucide-react'
-import type { ProviderConfig, Repository } from '@worktree/contracts'
+import {
+  AlertTriangle,
+  Image as ImageIcon,
+  KeyRound,
+  Loader2,
+  Plus,
+  Sparkles,
+  X,
+} from 'lucide-react'
+import type { ProjectAction, ProviderConfig, Repository } from '@worktree/contracts'
 import { useAppStore } from '../store'
 import { api } from '../api'
+import { ACTION_ICONS, ACTION_ICON_OPTIONS } from '../lib/actionIcons'
 import { editorLabel, editorOptionsForIds, sortEditorOptions, shortenPath } from '../lib/paths'
 import { cn } from '../lib/utils'
 import { ShellEditor } from './ShellEditor'
@@ -64,6 +73,10 @@ export function ProjectConfigModal({ repository, onClose, onSave }: ProjectConfi
   const [tokenHint, setTokenHint] = useState<string | null>(null)
   const [autoNote, setAutoNote] = useState<string | null>(null)
   const [imageUrl, setImageUrl] = useState(repository.imageUrl ?? '')
+  const [workingSubdirectory, setWorkingSubdirectory] = useState(
+    repository.workingSubdirectory ?? ''
+  )
+  const [actions, setActions] = useState<ProjectAction[]>(repository.actions ?? [])
   const [preDeleteCommand, setPreDeleteCommand] = useState(repository.preDeleteCommand ?? '')
   const [preDeleteTimeout, setPreDeleteTimeout] = useState(
     repository.preDeleteTimeoutSeconds ? String(repository.preDeleteTimeoutSeconds) : ''
@@ -204,6 +217,8 @@ export function ProjectConfigModal({ repository, onClose, onSave }: ProjectConfi
     (provider.token || '') !== (repository.provider?.personalAccessToken || '') ||
     currentSource !== savedSource ||
     (imageUrl || '') !== (repository.imageUrl || '') ||
+    (workingSubdirectory || '') !== (repository.workingSubdirectory || '') ||
+    JSON.stringify(actions) !== JSON.stringify(repository.actions ?? []) ||
     (preDeleteCommand || '') !== (repository.preDeleteCommand || '') ||
     (preDeleteTimeout || '') !==
       (repository.preDeleteTimeoutSeconds ? String(repository.preDeleteTimeoutSeconds) : '')
@@ -225,12 +240,29 @@ export function ProjectConfigModal({ repository, onClose, onSave }: ProjectConfi
       : undefined
 
     const timeoutSeconds = Number(preDeleteTimeout)
+    // `clubtidy`, `./clubtidy` and `clubtidy/` all mean the same folder.
+    const subdirectory = workingSubdirectory
+      .trim()
+      .replace(/^\.\//, '')
+      .replace(/^\/+|\/+$/g, '')
+    // A half-typed action (no command) would render as a button that does
+    // nothing, so it never reaches the row.
+    const cleanedActions = actions
+      .map((action) => ({
+        ...action,
+        label: action.label.trim() || 'Run',
+        command: action.command.trim(),
+      }))
+      .filter((action) => action.command.length > 0)
+
     onSave({
       ...repository,
       baseBranch,
       favorite,
       preferredEditor: preferredEditor || undefined,
       imageUrl: imageUrl || undefined,
+      workingSubdirectory: subdirectory || undefined,
+      actions: cleanedActions,
       provider: providerConfig,
       preDeleteCommand: preDeleteCommand.trim() || undefined,
       preDeleteTimeoutSeconds:
@@ -251,8 +283,10 @@ export function ProjectConfigModal({ repository, onClose, onSave }: ProjectConfi
         aria-label="Close dialog"
       />
       <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-4">
-        <div className="pointer-events-auto max-h-[90vh] w-full max-w-3xl overflow-auto rounded-2xl border border-border bg-card p-6 shadow-lg">
-          <div className="mb-4 flex items-center justify-between">
+        {/* Header and footer are pinned and only the middle scrolls, so Save is
+            reachable from anywhere in a form this tall. */}
+        <div className="pointer-events-auto flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-lg">
+          <div className="flex shrink-0 items-center justify-between border-b border-border px-6 py-4">
             <div>
               <h2 className="text-lg font-semibold">Project settings</h2>
               <p className="text-xs text-muted">{repository.name}</p>
@@ -267,7 +301,13 @@ export function ProjectConfigModal({ repository, onClose, onSave }: ProjectConfi
             </button>
           </div>
 
-          <div className="space-y-5">
+          <div className="min-h-0 flex-1 space-y-5 overflow-auto px-6 py-5">
+            <ActionsSection
+              actions={actions}
+              setActions={setActions}
+              workingSubdirectory={workingSubdirectory}
+            />
+
             <CleanupSection
               preDeleteCommand={preDeleteCommand}
               setPreDeleteCommand={setPreDeleteCommand}
@@ -278,6 +318,8 @@ export function ProjectConfigModal({ repository, onClose, onSave }: ProjectConfi
             <GeneralSection
               baseBranch={baseBranch}
               setBaseBranch={setBaseBranch}
+              workingSubdirectory={workingSubdirectory}
+              setWorkingSubdirectory={setWorkingSubdirectory}
               branches={branches}
               defaultBranch={defaultBranch}
               loadingBranches={loadingBranches}
@@ -306,11 +348,11 @@ export function ProjectConfigModal({ repository, onClose, onSave }: ProjectConfi
             />
           </div>
 
-          <div className="mt-6 flex justify-end gap-2">
+          <div className="flex shrink-0 justify-end gap-2 border-t border-border px-6 py-4">
             <button
               type="button"
               onClick={onClose}
-              className="rounded-md border border-border bg-background px-4 py-2 text-sm font-medium hover:bg-card"
+              className="rounded-md border border-border bg-background px-4 py-2 text-sm font-medium hover:bg-accent"
             >
               Cancel
             </button>
@@ -331,6 +373,8 @@ export function ProjectConfigModal({ repository, onClose, onSave }: ProjectConfi
 interface GeneralSectionProps {
   baseBranch: string
   setBaseBranch: (b: string) => void
+  workingSubdirectory: string
+  setWorkingSubdirectory: (value: string) => void
   branches: string[]
   defaultBranch: string | undefined
   loadingBranches: boolean
@@ -348,6 +392,8 @@ interface GeneralSectionProps {
 function GeneralSection({
   baseBranch,
   setBaseBranch,
+  workingSubdirectory,
+  setWorkingSubdirectory,
   branches,
   defaultBranch,
   loadingBranches,
@@ -402,6 +448,28 @@ function GeneralSection({
             status.
           </p>
         )}
+      </div>
+
+      <div>
+        <label htmlFor="working-subdirectory" className="mb-1 block text-sm font-medium">
+          Working subdirectory
+        </label>
+        <div className="flex items-center gap-2">
+          <span className="shrink-0 font-mono text-xs text-muted">&lt;worktree&gt;/</span>
+          <input
+            id="working-subdirectory"
+            type="text"
+            value={workingSubdirectory}
+            onChange={(e) => setWorkingSubdirectory(e.target.value)}
+            placeholder="clubtidy"
+            spellCheck={false}
+            className="min-w-0 flex-1 rounded-md border border-border bg-background px-3 py-2 font-mono text-sm outline-none focus:border-primary"
+          />
+        </div>
+        <p className="mt-1 text-xs text-muted">
+          For projects whose app lives one folder down. “Open in terminal” and custom actions start
+          here; worktrees without the folder fall back to their root.
+        </p>
       </div>
 
       <div>
@@ -494,6 +562,180 @@ function GeneralSection({
         <p className="mt-1 text-xs text-muted">Supports image URLs and local files.</p>
       </div>
     </section>
+  )
+}
+
+interface ActionsSectionProps {
+  actions: ProjectAction[]
+  setActions: (next: ProjectAction[]) => void
+  /** Only to tell the user where these commands will actually run. */
+  workingSubdirectory: string
+}
+
+/** Ids only have to be unique within one project's list. */
+function newActionId(): string {
+  return `action-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+function ActionsSection({ actions, setActions, workingSubdirectory }: ActionsSectionProps) {
+  const update = (id: string, patch: Partial<ProjectAction>) => {
+    setActions(actions.map((action) => (action.id === id ? { ...action, ...patch } : action)))
+  }
+
+  const add = () => {
+    setActions([
+      ...actions,
+      { id: newActionId(), label: '', command: '', icon: 'play', mode: 'terminal' },
+    ])
+  }
+
+  const where = workingSubdirectory.trim() ? `${workingSubdirectory.trim()}/` : 'the worktree root'
+
+  return (
+    <section className="space-y-3">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <h3 className="text-sm font-semibold">Custom actions</h3>
+          <p className="mt-0.5 text-xs text-muted">
+            A button on every worktree row of this project, run in {where} — a dev server, a
+            simulator, whatever this repo needs.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={add}
+          className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border bg-background px-2.5 py-1.5 text-xs font-medium hover:bg-accent"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Add action
+        </button>
+      </div>
+
+      {actions.length === 0 ? (
+        <p className="rounded-md border border-dashed border-border px-3 py-4 text-center text-xs text-muted">
+          No actions yet. Add one to get a button like{' '}
+          <code className="font-mono text-[11px] text-primary">npm run dev:local</code> on each row.
+        </p>
+      ) : (
+        <ul className="space-y-2">
+          {actions.map((action) => (
+            <li key={action.id} className="rounded-md border border-border bg-background p-2">
+              <ActionRow
+                action={action}
+                onChange={(patch) => update(action.id, patch)}
+                onRemove={() =>
+                  setActions(actions.filter((candidate) => candidate.id !== action.id))
+                }
+              />
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {actions.length > 0 && (
+        <p className="text-[11px] leading-relaxed text-muted">
+          “New terminal” opens a window in your terminal from Settings, so a long-running command
+          keeps printing and stops with ctrl-C. “Background” runs inside the app and reports the
+          output when it finishes. Both get{' '}
+          <code className="font-mono text-warning">$WORKTREE_PATH</code>,{' '}
+          <code className="font-mono text-warning">$WORKTREE_BRANCH</code>,{' '}
+          <code className="font-mono text-warning">$REPO_PATH</code> and{' '}
+          <code className="font-mono text-warning">$REPO_NAME</code>.
+        </p>
+      )}
+    </section>
+  )
+}
+
+function ActionRow({
+  action,
+  onChange,
+  onRemove,
+}: {
+  action: ProjectAction
+  onChange: (patch: Partial<ProjectAction>) => void
+  onRemove: () => void
+}) {
+  const Icon = ACTION_ICONS[action.icon]
+  const field =
+    'rounded-md border border-border bg-card px-2 py-1.5 text-xs outline-none focus:border-primary'
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <Icon className="h-4 w-4 shrink-0 text-primary" aria-hidden="true" />
+        <select
+          aria-label="Action icon"
+          value={action.icon}
+          onChange={(e) => onChange({ icon: e.target.value as ProjectAction['icon'] })}
+          className={cn(field, 'w-[104px]')}
+        >
+          {ACTION_ICON_OPTIONS.map((option) => (
+            <option key={option.id} value={option.id}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+        <input
+          type="text"
+          aria-label="Button label"
+          value={action.label}
+          onChange={(e) => onChange({ label: e.target.value })}
+          placeholder="Dev"
+          className={cn(field, 'w-28 font-medium')}
+        />
+        <select
+          aria-label="Where the command runs"
+          value={action.mode}
+          onChange={(e) => onChange({ mode: e.target.value as ProjectAction['mode'] })}
+          className={cn(field, 'w-[132px]')}
+        >
+          <option value="terminal">New terminal</option>
+          <option value="background">Background</option>
+        </select>
+        {action.mode === 'background' && (
+          <label className="flex items-center gap-1 text-[11px] text-muted">
+            <input
+              type="number"
+              min={1}
+              aria-label="Timeout in seconds"
+              value={action.timeoutSeconds ? String(action.timeoutSeconds) : ''}
+              onChange={(e) => {
+                const seconds = Number(e.target.value)
+                onChange({
+                  timeoutSeconds:
+                    Number.isFinite(seconds) && seconds > 0 ? seconds : undefined,
+                })
+              }}
+              placeholder="600"
+              className={cn(field, 'w-16 text-right')}
+            />
+            s
+          </label>
+        )}
+        <span className="flex-1" />
+        <button
+          type="button"
+          onClick={onRemove}
+          aria-label={`Remove action ${action.label || 'without a label'}`}
+          className="shrink-0 rounded p-1 text-muted hover:text-destructive"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+      <input
+        type="text"
+        aria-label="Command"
+        value={action.command}
+        onChange={(e) => onChange({ command: e.target.value })}
+        placeholder="npm run dev:local"
+        spellCheck={false}
+        autoComplete="off"
+        autoCorrect="off"
+        autoCapitalize="off"
+        className={cn(field, 'w-full font-mono')}
+      />
+    </div>
   )
 }
 

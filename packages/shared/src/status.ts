@@ -19,6 +19,7 @@ import {
   getStatusFiles,
   getStatusPorcelain,
   getUnpushedCommits,
+  getUpstreamRef,
   hasRemote,
   isMerged,
   resolveBaseRef,
@@ -50,6 +51,7 @@ export async function getWorktreeStatus(options: StatusOptions): Promise<Worktre
       worktreeId: worktree.id,
       dirty: false,
       staged: false,
+      hasUntracked: false,
       ahead: 0,
       behind: 0,
       unpushed: 0,
@@ -71,19 +73,35 @@ export async function getWorktreeStatus(options: StatusOptions): Promise<Worktre
   // check does, so "3 behind main" and "unmerged" can never disagree.
   const baseFullRef = baseSnapshot?.mergeRef ?? (await resolveBaseRef(cwd, baseBranch).catch(() => undefined))
 
-  const [status, aheadBehind, merged, unpushed, branch, headCommit, baseAheadBehind, mergeCommits] =
-    await Promise.all([
-      getStatusPorcelain(cwd).catch(() => ({ dirty: false, staged: false, hasUntracked: false })),
-      getAheadBehind(cwd).catch(() => ({ ahead: 0, behind: 0, hasUpstream: false })),
-      isMerged(cwd, baseBranch, baseSnapshot?.mergeRef).catch(() => false),
-      countUnpushed(cwd).catch(() => 0),
-      getCurrentBranch(cwd).catch(() => 'HEAD'),
-      getHeadCommit(cwd).catch(() => undefined),
-      baseFullRef
-        ? getRefAheadBehind(cwd, baseFullRef).catch(() => ({ ahead: 0, behind: 0 }))
-        : Promise.resolve({ ahead: 0, behind: 0 }),
-      baseFullRef ? countMergeCommits(cwd, baseFullRef).catch(() => 0) : Promise.resolve(0),
-    ])
+  let statusReadError: string | undefined
+  const statusPromise = getStatusPorcelain(cwd).catch((error) => {
+    statusReadError = String(error)
+    return { dirty: false, staged: false, hasUntracked: false }
+  })
+
+  const [
+    status,
+    aheadBehind,
+    merged,
+    unpushed,
+    branch,
+    headCommit,
+    baseAheadBehind,
+    mergeCommits,
+    upstreamRef,
+  ] = await Promise.all([
+    statusPromise,
+    getAheadBehind(cwd).catch(() => ({ ahead: 0, behind: 0, hasUpstream: false })),
+    isMerged(cwd, baseBranch, baseSnapshot?.mergeRef).catch(() => false),
+    countUnpushed(cwd).catch(() => 0),
+    getCurrentBranch(cwd).catch(() => 'HEAD'),
+    getHeadCommit(cwd).catch(() => undefined),
+    baseFullRef
+      ? getRefAheadBehind(cwd, baseFullRef).catch(() => ({ ahead: 0, behind: 0 }))
+      : Promise.resolve({ ahead: 0, behind: 0 }),
+    baseFullRef ? countMergeCommits(cwd, baseFullRef).catch(() => 0) : Promise.resolve(0),
+    getUpstreamRef(cwd).catch(() => undefined),
+  ])
 
   const hasRemoteConfigured = await hasRemote(cwd).catch(() => false)
   const detached = branch === 'HEAD'
@@ -99,6 +117,8 @@ export async function getWorktreeStatus(options: StatusOptions): Promise<Worktre
     worktreeId: worktree.id,
     dirty: status.dirty,
     staged: status.staged,
+    hasUntracked: status.hasUntracked,
+    ...(statusReadError ? { statusReadError } : {}),
     ahead: aheadBehind.ahead,
     behind: aheadBehind.behind,
     unpushed: hasRemoteConfigured ? (aheadBehind.hasUpstream ? aheadBehind.ahead : unpushed) : 0,
@@ -112,6 +132,7 @@ export async function getWorktreeStatus(options: StatusOptions): Promise<Worktre
     aheadBase: baseAheadBehind.ahead,
     mergeCommits,
     ...(baseFullRef ? { baseRef: shortRefName(baseFullRef) } : {}),
+    ...(upstreamRef ? { upstreamRef } : {}),
     branch,
     detached,
     ...(headCommit ? { headCommit } : {}),

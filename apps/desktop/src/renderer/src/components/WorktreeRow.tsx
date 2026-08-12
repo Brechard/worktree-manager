@@ -17,20 +17,26 @@ import {
   Eye,
   Undo2,
   AlertTriangle,
+  HardDrive,
 } from 'lucide-react'
 import type {
+  ProjectAction,
   Repository,
   SyncBaseMode,
+  SyncTarget,
   Worktree,
   WorktreeStatus,
   WorktreeDetails,
+  WorktreeDiskUsage,
 } from '@worktree/contracts'
-import { branchCanHavePullRequest, recommendedSyncMode } from '@worktree/contracts'
+import { branchCanHavePullRequest, formatBytes, updateOffers } from '@worktree/contracts'
 import { cn } from '../lib/utils'
+import { ACTION_ICONS } from '../lib/actionIcons'
 import { editorLabel, shortenPath } from '../lib/paths'
 import { api } from '../api'
 import { GitActionsMenu, type MergeMode } from './GitActionsMenu'
-import { SyncBaseButton } from './SyncBaseButton'
+import type { ProjectCatchUp } from '../lib/catchUp'
+import { SyncButton } from './SyncButton'
 import { DiffViewer } from './DiffViewer'
 import { isSafeToDelete } from '../lib/worktreeSorting'
 
@@ -38,6 +44,7 @@ type BusyKind =
   | 'editor'
   | 'terminal'
   | 'folder'
+  | 'action'
   | 'pull'
   | 'rebase'
   | 'push'
@@ -55,7 +62,15 @@ interface WorktreeRowProps {
   refreshing?: boolean | undefined
   /** The project's cleanup hook is running for this worktree. */
   cleaning?: boolean | undefined
+  /** What this worktree costs on disk, once measured. */
+  diskUsage?: WorktreeDiskUsage | undefined
+  /** A size measurement or a reclaim is in flight for this worktree. */
+  measuring?: boolean | undefined
+  /** Delete this worktree's generated directories (asks first). */
+  onReclaim?: ((worktree: Worktree) => void) | undefined
   editorId: string
+  /** The project-wide catch-up, passed only for the primary worktree. */
+  catchUp?: ProjectCatchUp | undefined
   onDelete: (worktree: Worktree) => void
   onActionError?: ((message: string) => void) | undefined
   onRefresh?: (() => void) | undefined
@@ -75,7 +90,7 @@ const gitActions = new Set([
 ])
 
 export function WorktreeRow(props: WorktreeRowProps) {
-  const { worktree, repository, status, refreshing, cleaning, editorId, onDelete, onActionError, onRefresh, onRefreshWorktree, onBranchChange } = props
+  const { worktree, repository, status, refreshing, cleaning, diskUsage, measuring, onReclaim, editorId, catchUp, onDelete, onActionError, onRefresh, onRefreshWorktree, onBranchChange } = props
 
   const [busy, setBusy] = useState<BusyKind | null>(null)
   const [expanded, setExpanded] = useState(false)
@@ -91,9 +106,13 @@ export function WorktreeRow(props: WorktreeRowProps) {
   const [loadingDiff, setLoadingDiff] = useState(false)
   const [commitMessage, setCommitMessage] = useState('')
   const [showCommitInput, setShowCommitInput] = useState(false)
-  // Set when a sync came back saying the other mode is the one that works, so
-  // the next click runs that instead of walking into the same conflict again.
-  const [learnedMode, setLearnedMode] = useState<SyncBaseMode | null>(null)
+  // Set when a sync came back saying another mode is the one that works, so the
+  // next click runs that instead of walking into the same wall again. Kept per
+  // target: what a rebase proved about the base says nothing about the upstream.
+  const [learned, setLearned] = useState<Partial<Record<SyncTarget, SyncBaseMode>>>({})
+  // Which custom action is running, so the spinner lands on the button that was
+  // clicked rather than on all of them.
+  const [runningActionId, setRunningActionId] = useState<string | null>(null)
 
   useEffect(() => {
     if (!expanded || details) return
@@ -157,9 +176,51 @@ export function WorktreeRow(props: WorktreeRowProps) {
     run('editor', () => window.api.openInEditor({ path: worktree.path, editor: editorId }))
 
   const handleTerminal = () =>
-    run('terminal', () => window.api.openInTerminal({ path: worktree.path }))
+    run('terminal', () =>
+      window.api.openInTerminal({
+        path: worktree.path,
+        ...(repository.workingSubdirectory
+          ? { subdirectory: repository.workingSubdirectory }
+          : {}),
+      })
+    )
 
   const handleFolder = () => run('folder', () => window.api.openInFileManager(worktree.path))
+
+  // A terminal-mode action is handed off to the terminal, so this resolves as
+  // soon as the window is up. A background one is awaited to the end, which is
+  // also the only case where the row's git state can have moved underneath us.
+  const handleAction = async (action: ProjectAction) => {
+    setRunningActionId(action.id)
+    try {
+      await run('action', async () => {
+        const result = await window.api.runProjectAction({
+          command: action.command,
+          worktreePath: worktree.path,
+          repoPath: repository.path,
+          branch: status?.branch ?? worktree.branch,
+          repoName: repository.name,
+          mode: action.mode,
+          label: action.label,
+          ...(repository.workingSubdirectory
+            ? { subdirectory: repository.workingSubdirectory }
+            : {}),
+          ...(action.timeoutSeconds ? { timeoutSeconds: action.timeoutSeconds } : {}),
+        })
+        if (result.success) {
+          if (result.output) console.info('[worktree] action:done', action.label, result.output)
+          return undefined
+        }
+        const reason = result.timedOut
+          ? `“${action.label}” timed out.`
+          : `“${action.label}” failed${result.exitCode != null ? ` (exit ${result.exitCode})` : ''}.`
+        return { success: false, output: result.output ? `${reason}\n\n${result.output}` : reason }
+      })
+      if (action.mode === 'background') await onRefreshWorktree?.(worktree)
+    } finally {
+      setRunningActionId(null)
+    }
+  }
 
   const handlePr = async () => {
     if (status?.pullRequest?.url) {
@@ -167,8 +228,6 @@ export function WorktreeRow(props: WorktreeRowProps) {
     }
   }
 
-  const handlePull = () => run('pull', () => window.api.pullWorktree(worktree.path))
-  const handleRebase = () => run('rebase', () => window.api.rebaseWorktree(worktree.path))
   const handlePush = () => run('push', () => window.api.pushWorktree(worktree.path))
   const handleUpdateBaseBranch = () =>
     run('updateBase', () =>
@@ -178,18 +237,31 @@ export function WorktreeRow(props: WorktreeRowProps) {
   // Unlike the other git actions, a sync reports back even when it succeeds:
   // "already up to date" and "the rebase landed but your stash needs a hand" are
   // both outcomes the user has to see, not silent no-ops.
-  const handleSync = (mode: SyncBaseMode) =>
-    run('sync', async () => {
+  const handleSync = (target: SyncTarget, mode: SyncBaseMode) =>
+    // Pulling this branch's own upstream is a pull, not a base sync — labelling
+    // the spinner by the target keeps the git menu's own entries honest too.
+    run(target === 'base' ? 'sync' : mode === 'rebase' ? 'rebase' : 'pull', async () => {
       const result = await window.api.syncWithBase({
         path: worktree.path,
         baseBranch: repository.baseBranch,
+        target,
         mode,
       })
-      setLearnedMode(result.recommendedMode ?? null)
+      setLearned((current) => {
+        const next = { ...current }
+        if (result.recommendedMode) next[target] = result.recommendedMode
+        else delete next[target]
+        return next
+      })
       if (!result.success) return { success: false, output: result.output }
       if (result.outcome !== 'synced') onActionError?.(result.output)
       return undefined
     })
+
+  // The git menu's explicit pull entries: same engine, same rollback, just with
+  // the mode chosen by hand instead of from the branch's shape.
+  const handlePull = () => handleSync('upstream', 'ff')
+  const handleRebase = () => handleSync('upstream', 'rebase')
 
   const handleLoadBranches = () => window.api.getRepoBranches(worktree.path).then((r) => r.branches)
   const handleCheckout = (branch: string) => {
@@ -267,12 +339,12 @@ export function WorktreeRow(props: WorktreeRowProps) {
     }
   }
 
-  // A learned mode only answers "what works against *this* base, from *this*
-  // commit". Once either moves the answer may differ, so drop it and let the
-  // branch's own shape decide again.
-  const syncSignature = `${status?.baseRef ?? ''}:${status?.behindBase ?? 0}:${status?.headCommit ?? ''}`
+  // A learned mode only answers "what works against *these* refs, from *this*
+  // commit". Once any of them moves the answer may differ, so drop it and let
+  // the branch's own shape decide again.
+  const syncSignature = `${status?.baseRef ?? ''}:${status?.behindBase ?? 0}:${status?.upstreamRef ?? ''}:${status?.behind ?? 0}:${status?.headCommit ?? ''}`
   useEffect(() => {
-    setLearnedMode(null)
+    setLearned({})
   }, [syncSignature])
 
   const liveBranch = status?.branch ?? worktree.branch
@@ -299,6 +371,9 @@ export function WorktreeRow(props: WorktreeRowProps) {
         repository={repository}
         busy={busy}
         cleaning={cleaning}
+        diskUsage={diskUsage}
+        measuring={measuring}
+        onReclaim={onReclaim}
         liveBranch={liveBranch}
         detached={detached}
         headCommit={headCommit}
@@ -310,12 +385,15 @@ export function WorktreeRow(props: WorktreeRowProps) {
         expanded={expanded}
         setExpanded={setExpanded}
         editorId={editorId}
+        catchUp={catchUp}
         showCommitInput={showCommitInput}
         setShowCommitInput={setShowCommitInput}
         onDelete={onDelete}
         handleOpen={handleOpen}
         handleTerminal={handleTerminal}
         handleFolder={handleFolder}
+        handleAction={handleAction}
+        runningActionId={runningActionId}
         handlePr={handlePr}
         handlePull={handlePull}
         handleRebase={handleRebase}
@@ -324,7 +402,7 @@ export function WorktreeRow(props: WorktreeRowProps) {
         handleCheckout={handleCheckout}
         handleMerge={handleMerge}
         handleSync={handleSync}
-        learnedMode={learnedMode}
+        learned={learned}
         handleLoadBranches={handleLoadBranches}
       />
       {expanded && (
@@ -372,12 +450,84 @@ function gitBusyLabel(kind: string, baseBranch: string): string {
   }
 }
 
+/**
+ * What this worktree costs, and the one-click way to give most of it back.
+ *
+ * The generated part is spelled out separately because that is the number that
+ * can be acted on without losing anything: a branch that is still in flight
+ * cannot be deleted, but its `node_modules` can, and it comes back with an
+ * install. Without a size here, ten worktrees of one project look identical.
+ */
+function DiskUsageChip({
+  worktree,
+  usage,
+  measuring,
+  onReclaim,
+}: {
+  worktree: Worktree
+  usage: WorktreeDiskUsage | undefined
+  measuring: boolean
+  onReclaim?: ((worktree: Worktree) => void) | undefined
+}) {
+  const icon = measuring ? (
+    <Loader2 className="h-3 w-3 animate-spin" />
+  ) : (
+    <HardDrive className="h-3 w-3" />
+  )
+
+  if (!usage || usage.error) {
+    return (
+      <span className="inline-flex items-center gap-1" title={usage?.error}>
+        {icon}
+        {measuring ? 'measuring…' : '—'}
+      </span>
+    )
+  }
+
+  const canReclaim = !measuring && usage.reclaimableBytes > 0 && onReclaim !== undefined
+  if (!canReclaim) {
+    return (
+      <span className="inline-flex items-center gap-1" title="Size on disk">
+        {icon}
+        {formatBytes(usage.totalBytes)}
+      </span>
+    )
+  }
+
+  const breakdown = usage.entries
+    .slice(0, 6)
+    .map((entry) => `  ${entry.path} — ${formatBytes(entry.bytes)}`)
+    .join('\n')
+
+  return (
+    <button
+      type="button"
+      onClick={(event) => {
+        event.stopPropagation()
+        onReclaim?.(worktree)
+      }}
+      className="-mx-1 inline-flex items-center gap-1 rounded px-1 py-0.5 hover:bg-accent hover:text-foreground"
+      title={
+        `${formatBytes(usage.totalBytes)} on disk, ${formatBytes(usage.reclaimableBytes)} of it generated:\n${breakdown}` +
+        `\n\nClick to delete these — they rebuild from source.`
+      }
+    >
+      {icon}
+      {formatBytes(usage.totalBytes)}
+      <span className="text-primary">· reclaim ~{formatBytes(usage.reclaimableBytes)}</span>
+    </button>
+  )
+}
+
 interface WorktreeRowHeaderProps {
   worktree: Worktree
   status?: WorktreeStatus | undefined
   repository: Repository
   busy: BusyKind | null
   cleaning?: boolean | undefined
+  diskUsage?: WorktreeDiskUsage | undefined
+  measuring?: boolean | undefined
+  onReclaim?: ((worktree: Worktree) => void) | undefined
   liveBranch: string
   detached: boolean
   headCommit: string | undefined
@@ -389,12 +539,16 @@ interface WorktreeRowHeaderProps {
   expanded: boolean
   setExpanded: (v: React.SetStateAction<boolean>) => void
   editorId: string
+  catchUp?: ProjectCatchUp | undefined
   showCommitInput: boolean
   setShowCommitInput: (v: React.SetStateAction<boolean>) => void
   onDelete: (worktree: Worktree) => void
   handleOpen: () => void
   handleTerminal: () => void
   handleFolder: () => void
+  handleAction: (action: ProjectAction) => void
+  /** Id of the custom action currently running, if any. */
+  runningActionId: string | null
   handlePr: () => Promise<void>
   handlePull: () => void
   handleRebase: () => void
@@ -402,9 +556,9 @@ interface WorktreeRowHeaderProps {
   handleUpdateBaseBranch: () => void
   handleCheckout: (branch: string) => void
   handleMerge: (branch: string, mode: MergeMode) => void
-  handleSync: (mode: SyncBaseMode) => void
-  /** Mode a previous sync proved to be the working one, if any. */
-  learnedMode: SyncBaseMode | null
+  handleSync: (target: SyncTarget, mode: SyncBaseMode) => void
+  /** Modes previous syncs proved to be the working ones, per target. */
+  learned: Partial<Record<SyncTarget, SyncBaseMode>>
   handleLoadBranches: () => Promise<string[]>
 }
 
@@ -414,6 +568,9 @@ function WorktreeRowHeader({
   repository,
   busy,
   cleaning,
+  diskUsage,
+  measuring,
+  onReclaim,
   liveBranch,
   detached,
   headCommit,
@@ -425,12 +582,15 @@ function WorktreeRowHeader({
   expanded,
   setExpanded,
   editorId,
+  catchUp,
   showCommitInput,
   setShowCommitInput,
   onDelete,
   handleOpen,
   handleTerminal,
   handleFolder,
+  handleAction,
+  runningActionId,
   handlePr,
   handlePull,
   handleRebase,
@@ -439,19 +599,39 @@ function WorktreeRowHeader({
   handleCheckout,
   handleMerge,
   handleSync,
-  learnedMode,
+  learned,
   handleLoadBranches,
 }: WorktreeRowHeaderProps) {
   const behindBase = status?.behindBase ?? 0
   const baseRef = status?.baseRef ?? repository.baseBranch
-  const canSync = !prunable && !detached && behindBase > 0
-  const suggested = recommendedSyncMode(status, baseRef)
-  // What a sync actually proved beats what the branch's shape suggests.
-  const syncMode = learnedMode ?? suggested.mode
-  const syncReason =
-    learnedMode && learnedMode !== suggested.mode
-      ? `A rebase onto ${baseRef} conflicts here, but a merge applies cleanly.`
-      : suggested.reason
+  // Everything this row could bring in — its own upstream first, then the base.
+  // A stale worktree has no working tree to bring anything into.
+  const offers = prunable ? [] : updateOffers(status)
+  const upstreamOffer = offers.find((offer) => offer.target === 'upstream')
+  const baseOffer = offers.find((offer) => offer.target === 'base')
+
+  // The catch-up is worth offering on the primary worktree once the base has
+  // moved on — either origin has commits the local base does not, or this
+  // worktree is parked on a branch that already landed there and has nothing
+  // left to do. Anything else and the primary is already where it should be.
+  const baseMovedOn = catchUp?.baseOutdated === true || behindBase > 0
+  const parkedOnMergedBranch =
+    !detached && liveBranch !== repository.baseBranch && status?.mergedIntoBase === true
+  const offerCatchUp =
+    catchUp &&
+    worktree.isMain &&
+    !prunable &&
+    (catchUp.running || baseMovedOn || parkedOnMergedBranch)
+      ? catchUp
+      : undefined
+  // Every row locks its git actions while the sweep runs, not just the one that
+  // started it — it is replaying this worktree onto the base too.
+  const projectBusy = catchUp?.running === true
+  // Whichever offer the button's main label is spelling out, so the status line
+  // above it can leave that one count to the button.
+  const spoken = offerCatchUp ? undefined : offers[0]?.target
+  const speaksFor = { upstream: spoken === 'upstream', base: spoken === 'base' }
+  const syncBusy = busy === 'sync' || busy === 'pull' || busy === 'rebase'
 
   return (
     <div className="flex items-center justify-between gap-3 px-4 py-3">
@@ -575,6 +755,14 @@ function WorktreeRowHeader({
               {new Date(worktree.lastModified).toLocaleDateString()}
             </span>
           )}
+          {!prunable && (diskUsage || measuring) && (
+            <DiskUsageChip
+              worktree={worktree}
+              usage={diskUsage}
+              measuring={measuring === true}
+              onReclaim={onReclaim}
+            />
+          )}
           {prunable && (
             <span className="inline-flex items-center gap-1 text-warning">
               <AlertTriangle className="h-3 w-3" />
@@ -585,21 +773,20 @@ function WorktreeRowHeader({
             <>
               {status.dirty && <span className="text-warning">dirty</span>}
               {status.staged && <span className="text-warning">staged</span>}
+              {status.hasUntracked && <span className="text-warning">untracked</span>}
               {(status.ahead > 0 || status.unpushed > 0) && (
                 <span className="text-warning">
                   {status.ahead > 0 ? `${status.ahead} ahead` : `${status.unpushed} unpushed`}
                 </span>
               )}
-              {/* On the base branch itself the upstream *is* the base ref, so the
-                  count below already says it — don't print the same number twice. */}
-              {status.behind > 0 && liveBranch !== status.baseBranch && (
+              {/* Only when the button is not already saying it — it spells out
+                  the same count and ref, and printing both reads as noise. */}
+              {status.behind > 0 && liveBranch !== status.baseBranch && !speaksFor.upstream && (
                 <span title={`${status.behind} commit(s) on this branch's own upstream`}>
                   {status.behind} behind upstream
                 </span>
               )}
-              {/* Only when there is no sync button to say it — the button spells
-                  out the same count and ref, and printing both reads as noise. */}
-              {behindBase > 0 && !canSync && (
+              {behindBase > 0 && !speaksFor.base && (
                 <span
                   className="text-primary"
                   title={`${baseRef} has ${behindBase} commit(s) this branch has not integrated yet.`}
@@ -651,20 +838,41 @@ function WorktreeRowHeader({
           </button>
         ) : (
           <>
-            {busy && gitActions.has(busy) && (
+            {/* The primary row says it on the catch-up button itself; the rows
+                being swept along have nothing else to show for it. */}
+            {projectBusy && !offerCatchUp ? (
               <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-muted">
                 <Loader2 className="h-3 w-3 animate-spin" />
-                {gitBusyLabel(busy, repository.baseBranch)}
+                Project update running
               </span>
+            ) : (
+              busy &&
+              gitActions.has(busy) && (
+                <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-muted">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  {gitBusyLabel(busy, repository.baseBranch)}
+                </span>
+              )
             )}
-            {canSync && (
-              <SyncBaseButton
-                behind={behindBase}
-                baseRef={baseRef}
-                mode={syncMode}
-                reason={syncReason}
-                busy={busy === 'sync'}
-                disabled={Boolean(busy) && busy !== 'sync'}
+            {repository.actions.map((action) => (
+              <ActionButton
+                key={action.id}
+                action={action}
+                subdirectory={repository.workingSubdirectory}
+                running={runningActionId === action.id}
+                disabled={Boolean(busy) && runningActionId !== action.id}
+                onRun={handleAction}
+              />
+            ))}
+            {(offers.length > 0 || offerCatchUp) && (
+              <SyncButton
+                offers={offers}
+                baseBranch={repository.baseBranch}
+                branch={liveBranch}
+                learned={learned}
+                catchUp={offerCatchUp}
+                busy={syncBusy}
+                disabled={(Boolean(busy) && !syncBusy) || (projectBusy && !offerCatchUp)}
                 onSync={handleSync}
               />
             )}
@@ -685,10 +893,10 @@ function WorktreeRowHeader({
               onCheckout={handleCheckout}
               onMerge={handleMerge}
               onSync={handleSync}
-              behindBase={behindBase}
-              baseRef={baseRef}
-              syncMode={syncMode}
-              canSync={canSync}
+              baseOffer={baseOffer}
+              upstreamOffer={upstreamOffer}
+              catchUp={offerCatchUp}
+              blocked={projectBusy}
             />
             <IconButton
               title={`Open in ${editorLabel(editorId)}`}
@@ -1030,6 +1238,51 @@ function CommitList({
         ))}
       </ul>
     </div>
+  )
+}
+
+/**
+ * One of the project's custom actions. Icon plus label, because a bare icon
+ * can't say "dev server" and a bare command doesn't fit; the full command lives
+ * in the tooltip.
+ */
+function ActionButton({
+  action,
+  subdirectory,
+  running,
+  disabled,
+  onRun,
+}: {
+  action: ProjectAction
+  subdirectory: string | undefined
+  running: boolean
+  disabled: boolean
+  onRun: (action: ProjectAction) => void
+}) {
+  const Icon = ACTION_ICONS[action.icon]
+  const where = subdirectory ? ` in ${subdirectory}/` : ''
+  const title = [
+    `${action.label} · ${action.command}`,
+    action.mode === 'terminal'
+      ? `Opens a new terminal window${where}.`
+      : `Runs in the background${where}.`,
+  ].join('\n\n')
+
+  return (
+    <button
+      type="button"
+      onClick={() => onRun(action)}
+      disabled={disabled || running}
+      title={title}
+      className="inline-flex max-w-[150px] items-center gap-1.5 rounded-md border border-border bg-card px-2 py-1.5 text-[11px] font-medium text-foreground/90 transition-colors hover:bg-accent disabled:opacity-50"
+    >
+      {running ? (
+        <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />
+      ) : (
+        <Icon className="h-3.5 w-3.5 shrink-0 text-primary" />
+      )}
+      <span className="truncate">{action.label}</span>
+    </button>
   )
 }
 

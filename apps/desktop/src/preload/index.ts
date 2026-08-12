@@ -13,8 +13,12 @@ import type {
   ProviderType,
   WorktreeStatusesResult,
   SyncBaseMode,
+  SyncTarget,
   SyncBaseResult,
-  CleanupResult,
+  CommandResult,
+  ProjectActionMode,
+  WorktreeDiskUsage,
+  ReclaimSpaceResult,
 } from '@worktree/contracts'
 
 const api = {
@@ -90,12 +94,6 @@ const api = {
     untracked?: boolean
   }): Promise<{ success: boolean; output: string }> => ipcRenderer.invoke('discard-file', args),
 
-  pullWorktree: (path: string): Promise<{ success: boolean; output: string }> =>
-    ipcRenderer.invoke('pull-worktree', path),
-
-  rebaseWorktree: (path: string): Promise<{ success: boolean; output: string }> =>
-    ipcRenderer.invoke('rebase-worktree', path),
-
   pushWorktree: (path: string): Promise<{ success: boolean; output: string }> =>
     ipcRenderer.invoke('push-worktree', path),
 
@@ -123,11 +121,26 @@ const api = {
     branch?: string
     repoName?: string
     timeoutSeconds?: number
-  }): Promise<CleanupResult> => ipcRenderer.invoke('run-worktree-cleanup', args),
+  }): Promise<CommandResult> => ipcRenderer.invoke('run-worktree-cleanup', args),
+
+  runProjectAction: (args: {
+    command: string
+    worktreePath: string
+    repoPath: string
+    branch?: string
+    repoName?: string
+    /** Relative to the worktree root; where the command should run. */
+    subdirectory?: string
+    mode: ProjectActionMode
+    timeoutSeconds?: number
+    label?: string
+  }): Promise<CommandResult> => ipcRenderer.invoke('run-project-action', args),
 
   syncWithBase: (args: {
     path: string
     baseBranch: string
+    /** Which ref to bring in; defaults to the base branch. */
+    target?: SyncTarget
     mode?: SyncBaseMode
   }): Promise<SyncBaseResult> => ipcRenderer.invoke('sync-with-base', args),
 
@@ -136,6 +149,19 @@ const api = {
     message: string
     all?: boolean
   }): Promise<{ success: boolean; output: string }> => ipcRenderer.invoke('commit-worktree', args),
+
+  measureWorktreeDisk: (args: {
+    worktreeId: string
+    path: string
+    /** Ignore the cached measurement and walk the tree again. */
+    refresh?: boolean
+  }): Promise<WorktreeDiskUsage> => ipcRenderer.invoke('measure-worktree-disk', args),
+
+  reclaimWorktreeSpace: (args: {
+    path: string
+    /** Worktree-relative directories, as measured. */
+    entries: string[]
+  }): Promise<ReclaimSpaceResult> => ipcRenderer.invoke('reclaim-worktree-space', args),
 
   openDirectoryDialog: (): Promise<string[]> => ipcRenderer.invoke('open-directory-dialog'),
 
@@ -146,6 +172,8 @@ const api = {
   openInTerminal: (args: {
     path: string
     terminal?: string
+    /** Project subdirectory to open instead of the worktree root. */
+    subdirectory?: string
   }): Promise<{ success: boolean; error?: string }> => ipcRenderer.invoke('open-in-terminal', args),
   openInFileManager: (path: string): Promise<{ success: boolean; error?: string }> =>
     ipcRenderer.invoke('open-in-file-manager', path),
@@ -155,6 +183,12 @@ const api = {
     missing?: boolean
     branch?: string
     deleteBranch?: boolean
+    /** Delete outright rather than move to Trash. */
+    permanent?: boolean
+    /** Required for the main process to revalidate a permanent deletion. */
+    worktree?: Worktree
+    repository?: Repository
+    expectedStatus?: WorktreeStatus
   }): Promise<{ success: boolean; error?: string; branchError?: string }> =>
     ipcRenderer.invoke('remove-worktree', args),
   openExternal: (url: string): Promise<void> => ipcRenderer.invoke('open-external', url),

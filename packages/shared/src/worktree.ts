@@ -403,6 +403,7 @@ export async function discoverRepositories(
         baseBranch: defaultBranch || 'main',
         remoteUrl,
         favorite: false,
+        actions: [],
         ...(imageUrl ? { imageUrl } : {}),
         ...(provider ? { provider } : {}),
       }

@@ -9,13 +9,15 @@ import {
   Upload,
   RefreshCw,
   RefreshCcw,
+  ListRestart,
   ChevronDown,
   ChevronRight,
   ChevronLeft,
   Loader2,
 } from 'lucide-react'
-import type { SyncBaseMode } from '@worktree/contracts'
+import type { SyncBaseMode, SyncTarget, UpdateOffer } from '@worktree/contracts'
 import { cn } from '../lib/utils'
+import { describeCatchUp, type ProjectCatchUp } from '../lib/catchUp'
 import { useFloatingMenu } from './useFloatingMenu'
 
 const BusyIcon = <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -30,6 +32,7 @@ interface GitActionsMenuProps {
     | 'editor'
     | 'terminal'
     | 'folder'
+    | 'action'
     | 'pull'
     | 'rebase'
     | 'push'
@@ -41,14 +44,15 @@ interface GitActionsMenuProps {
     | null
   branch: string
   baseBranch: string
-  /** Display ref the sync would pull from, e.g. `origin/main`. */
-  baseRef: string
-  /** Commits on the base ref this branch has not integrated. */
-  behindBase: number
-  /** The mode suited to this branch; marked as suggested in the list. */
-  syncMode: SyncBaseMode
-  /** False on a detached HEAD, where there is no branch to sync. */
-  canSync: boolean
+  /** Commits waiting on the base ref, with the mode that suits them — absent
+   *  when the branch is level with the base (or there is no branch at all). */
+  baseOffer?: UpdateOffer | undefined
+  /** The same, for commits waiting on this branch's own upstream. */
+  upstreamOffer?: UpdateOffer | undefined
+  /** Set on the primary worktree when the project is worth catching up. */
+  catchUp?: ProjectCatchUp | undefined
+  /** A project-wide operation is moving this worktree; keep hands off the menu. */
+  blocked?: boolean | undefined
   showCommitInput: boolean
   loadBranches: () => Promise<string[]>
   onPull: () => void
@@ -58,7 +62,7 @@ interface GitActionsMenuProps {
   onUpdateBaseBranch: () => void
   onCheckout: (branch: string) => void
   onMerge: (branch: string, mode: MergeMode) => void
-  onSync: (mode: SyncBaseMode) => void
+  onSync: (target: SyncTarget, mode: SyncBaseMode) => void
 }
 
 type View = 'root' | 'checkout' | 'merge' | 'merge-mode'
@@ -82,10 +86,10 @@ export function GitActionsMenu({
   busy,
   branch,
   baseBranch,
-  baseRef,
-  behindBase,
-  syncMode,
-  canSync,
+  baseOffer,
+  upstreamOffer,
+  catchUp,
+  blocked,
   showCommitInput,
   loadBranches,
   onPull,
@@ -104,6 +108,11 @@ export function GitActionsMenu({
   const [query, setQuery] = useState('')
   const [target, setTarget] = useState<string | null>(null)
   const { anchorRef, menuRef, position } = useFloatingMenu(open, setOpen)
+
+  // The catch-up rebases every worktree in the project, this one included, so
+  // while it runs nothing in the menu may start on top of it.
+  const locked = Boolean(busy) || blocked === true
+  const catchUpCopy = catchUp ? describeCatchUp(branch, baseBranch, catchUp.worktreeCount) : null
 
   // Reset navigation state whenever the menu closes.
   useEffect(() => {
@@ -170,38 +179,93 @@ export function GitActionsMenu({
           >
             {view === 'root' && (
               <>
-                {canSync && (
+                {catchUp && catchUpCopy && (
                   <>
-                    <p className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted">
-                      {behindBase > 0
-                        ? `${behindBase} new commit${behindBase === 1 ? '' : 's'} on ${baseRef}`
-                        : `Up to date with ${baseRef}`}
-                    </p>
                     <button
                       type="button"
                       onClick={() => {
                         setOpen(false)
-                        onSync('rebase')
+                        catchUp.run()
                       }}
-                      disabled={Boolean(busy)}
-                      className={cn(itemClass, busy === 'sync' && 'bg-accent')}
+                      disabled={locked}
+                      title={`Put ${baseBranch} back under this worktree, pull it, then bring every other worktree up to it.`}
+                      className={cn(
+                        itemClass,
+                        'flex-col items-start gap-0.5',
+                        catchUp.running && 'bg-accent'
+                      )}
                     >
-                      {busy === 'sync' ? BusyIcon : <ArrowDownToLine className="h-3.5 w-3.5" />}
-                      Rebase onto {baseRef}
-                      {syncMode === 'rebase' && <SuggestedTag />}
+                      <span className="flex w-full items-center gap-2 font-medium">
+                        {catchUp.running ? (
+                          BusyIcon
+                        ) : (
+                          <ListRestart className="h-3.5 w-3.5 text-primary" />
+                        )}
+                        {catchUpCopy.label}
+                      </span>
+                      <span className="pl-6 text-[10px] leading-snug text-muted">
+                        {catchUpCopy.steps.join(' · ')}
+                      </span>
+                    </button>
+                    <div className="my-1 border-t border-border" />
+                  </>
+                )}
+                {baseOffer && (
+                  <>
+                    <p className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted">
+                      {baseOffer.behind} new commit{baseOffer.behind === 1 ? '' : 's'} on{' '}
+                      {baseOffer.ref}
+                    </p>
+                    {/* Nothing of ours in the way, so the base can simply be
+                        walked onto — offered first because it is the cheapest
+                        thing that works. */}
+                    {baseOffer.ahead === 0 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setOpen(false)
+                          onSync('base', 'ff')
+                        }}
+                        disabled={locked}
+                        className={cn(itemClass, busy === 'sync' && 'bg-accent')}
+                      >
+                        {busy === 'sync' ? BusyIcon : <ArrowDownToLine className="h-3.5 w-3.5" />}
+                        Fast-forward to {baseOffer.ref}
+                        {baseOffer.mode === 'ff' && <SuggestedTag />}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOpen(false)
+                        onSync('base', 'rebase')
+                      }}
+                      disabled={locked}
+                      className={cn(
+                        itemClass,
+                        busy === 'sync' && baseOffer.ahead > 0 && 'bg-accent'
+                      )}
+                    >
+                      {busy === 'sync' && baseOffer.ahead > 0 ? (
+                        BusyIcon
+                      ) : (
+                        <RefreshCw className="h-3.5 w-3.5" />
+                      )}
+                      Rebase onto {baseOffer.ref}
+                      {baseOffer.mode === 'rebase' && <SuggestedTag />}
                     </button>
                     <button
                       type="button"
                       onClick={() => {
                         setOpen(false)
-                        onSync('merge')
+                        onSync('base', 'merge')
                       }}
-                      disabled={Boolean(busy)}
+                      disabled={locked}
                       className={itemClass}
                     >
                       <GitMerge className="h-3.5 w-3.5" />
-                      Merge {baseRef} in
-                      {syncMode === 'merge' && <SuggestedTag />}
+                      Merge {baseOffer.ref} in
+                      {baseOffer.mode === 'merge' && <SuggestedTag />}
                     </button>
                     <div className="my-1 border-t border-border" />
                   </>
@@ -213,12 +277,18 @@ export function GitActionsMenu({
                       setOpen(false)
                       onUpdateBaseBranch()
                     }}
-                    disabled={Boolean(busy)}
+                    disabled={locked}
                     className={cn(itemClass, busy === 'updateBase' && 'bg-accent')}
                   >
                     {busy === 'updateBase' ? BusyIcon : <RefreshCcw className="h-3.5 w-3.5" />}
                     Update {baseBranch}
                   </button>
+                )}
+                {upstreamOffer && (
+                  <p className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted">
+                    {upstreamOffer.behind} new commit{upstreamOffer.behind === 1 ? '' : 's'} on{' '}
+                    {upstreamOffer.ref}
+                  </p>
                 )}
                 <button
                   type="button"
@@ -226,11 +296,12 @@ export function GitActionsMenu({
                     setOpen(false)
                     onPull()
                   }}
-                  disabled={Boolean(busy)}
+                  disabled={locked}
                   className={cn(itemClass, busy === 'pull' && 'bg-accent')}
                 >
                   {busy === 'pull' ? BusyIcon : <Download className="h-3.5 w-3.5" />}
                   Pull fast-forward
+                  {upstreamOffer?.mode === 'ff' && <SuggestedTag />}
                 </button>
                 <button
                   type="button"
@@ -238,19 +309,37 @@ export function GitActionsMenu({
                     setOpen(false)
                     onRebase()
                   }}
-                  disabled={Boolean(busy)}
+                  disabled={locked}
                   className={cn(itemClass, busy === 'rebase' && 'bg-accent')}
                 >
                   {busy === 'rebase' ? BusyIcon : <RefreshCw className="h-3.5 w-3.5" />}
                   Pull with rebase
+                  {upstreamOffer?.mode === 'rebase' && <SuggestedTag />}
                 </button>
+                {/* Only once the branch and its upstream have actually diverged:
+                    before that a merge is just a fast-forward wearing a hat. */}
+                {upstreamOffer && upstreamOffer.ahead > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setOpen(false)
+                      onSync('upstream', 'merge')
+                    }}
+                    disabled={locked}
+                    className={itemClass}
+                  >
+                    <GitMerge className="h-3.5 w-3.5" />
+                    Merge {upstreamOffer.ref} in
+                    {upstreamOffer.mode === 'merge' && <SuggestedTag />}
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => {
                     setOpen(false)
                     onPush()
                   }}
-                  disabled={Boolean(busy)}
+                  disabled={locked}
                   className={cn(itemClass, busy === 'push' && 'bg-accent')}
                 >
                   {busy === 'push' ? BusyIcon : <Upload className="h-3.5 w-3.5" />}
@@ -260,7 +349,7 @@ export function GitActionsMenu({
                 <button
                   type="button"
                   onClick={() => openBranchList('checkout')}
-                  disabled={Boolean(busy)}
+                  disabled={locked}
                   className={cn(itemClass, busy === 'checkout' && 'bg-accent')}
                 >
                   {busy === 'checkout' ? BusyIcon : <GitBranch className="h-3.5 w-3.5" />}
@@ -270,7 +359,7 @@ export function GitActionsMenu({
                 <button
                   type="button"
                   onClick={() => openBranchList('merge')}
-                  disabled={Boolean(busy)}
+                  disabled={locked}
                   className={cn(itemClass, busy === 'merge' && 'bg-accent')}
                 >
                   {busy === 'merge' ? BusyIcon : <GitMerge className="h-3.5 w-3.5" />}

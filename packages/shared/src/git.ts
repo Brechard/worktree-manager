@@ -96,12 +96,20 @@ export async function removeWorktree(
   return { success: exitCode === 0, output: stdout || stderr }
 }
 
-/** Delete a local branch only when Git considers it fully merged. */
+/**
+ * Delete a local branch. Callers only pass `deleteBranch: true` after already
+ * confirming the branch is merged into the base (see `isMerged`), so this
+ * force-deletes rather than trusting git's own `-d` safety check — that check
+ * *also* requires the branch be merged into its configured remote-tracking
+ * ref, which is routinely stale or gone once a PR lands (squash/rebase
+ * merges, or the provider deleting the head branch), producing a false
+ * "not fully merged" refusal even though it is merged to HEAD.
+ */
 export async function deleteLocalBranch(
   cwd: string,
   branch: string
 ): Promise<{ success: boolean; output: string }> {
-  const { stdout, stderr, exitCode } = await runGit(cwd, ['branch', '-d', '--', branch])
+  const { stdout, stderr, exitCode } = await runGit(cwd, ['branch', '-D', '--', branch])
   return { success: exitCode === 0, output: stdout || stderr }
 }
 
@@ -256,6 +264,54 @@ export async function getAheadBehind(
   return { ahead, behind, hasUpstream: true }
 }
 
+export interface UpstreamRef {
+  /** Remote the branch tracks, practically always `origin`. */
+  remote: string
+  /** Branch name on that remote, which need not match the local one. */
+  remoteBranch: string
+  /** Full ref, e.g. `refs/remotes/origin/feature`. */
+  ref: string
+  /** Display form, e.g. `origin/feature`. */
+  short: string
+}
+
+/** Display form of the current branch's upstream, or undefined when it has none. */
+export async function getUpstreamRef(cwd: string): Promise<string | undefined> {
+  const { stdout, exitCode } = await runGit(cwd, [
+    'rev-parse',
+    '--symbolic-full-name',
+    '@{upstream}',
+  ])
+  if (exitCode !== 0 || !stdout) return undefined
+  return shortRefName(stdout)
+}
+
+/**
+ * Everything needed to *fetch* the current branch's upstream, not just name it.
+ * The remote and the branch name on it come from the branch's own config rather
+ * than from splitting `origin/feature`, which guesses wrong whenever the local
+ * and remote names differ.
+ */
+export async function getUpstream(cwd: string): Promise<UpstreamRef | undefined> {
+  const { stdout: ref, exitCode } = await runGit(cwd, [
+    'rev-parse',
+    '--symbolic-full-name',
+    '@{upstream}',
+  ])
+  if (exitCode !== 0 || !ref) return undefined
+  const branch = await getCurrentBranch(cwd)
+  const [remoteResult, mergeResult] = await Promise.all([
+    runGit(cwd, ['config', '--get', `branch.${branch}.remote`]),
+    runGit(cwd, ['config', '--get', `branch.${branch}.merge`]),
+  ])
+  const remote = remoteResult.stdout || 'origin'
+  const short = shortRefName(ref)
+  const remoteBranch =
+    mergeResult.stdout.replace(/^refs\/heads\//, '') ||
+    (short.startsWith(`${remote}/`) ? short.slice(remote.length + 1) : short)
+  return { remote, remoteBranch, ref, short }
+}
+
 /**
  * Compare HEAD with an arbitrary ref. `behind` is what the ref has that HEAD
  * does not — for a base ref that is exactly "commits not integrated yet".
@@ -346,7 +402,14 @@ export async function getStatusPorcelain(cwd: string): Promise<{
   staged: boolean
   hasUntracked: boolean
 }> {
-  const { stdout } = await runGit(cwd, ['status', '--porcelain'], { raw: true })
+  // Force untracked reporting instead of inheriting status.showUntrackedFiles;
+  // cleanup safety cannot let a user config hide the only copy of a file.
+  const { stdout, stderr, exitCode } = await runGit(
+    cwd,
+    ['status', '--porcelain', '--untracked-files=all'],
+    { raw: true }
+  )
+  if (exitCode !== 0) throw new Error(stderr || 'git status failed')
   let dirty = false
   let staged = false
   let hasUntracked = false
@@ -532,22 +595,6 @@ export async function discardFile(
   }
 }
 
-export async function pullWorktree(cwd: string): Promise<GitActionResult> {
-  const { stdout, stderr, exitCode } = await runGit(cwd, ['pull', '--ff-only'])
-  return {
-    success: exitCode === 0,
-    output: exitCode === 0 ? stdout || 'Pulled' : stderr || 'Pull failed',
-  }
-}
-
-export async function rebaseWorktree(cwd: string): Promise<GitActionResult> {
-  const { stdout, stderr, exitCode } = await runGit(cwd, ['pull', '--rebase'])
-  return {
-    success: exitCode === 0,
-    output: exitCode === 0 ? stdout || 'Rebased' : stderr || 'Rebase failed',
-  }
-}
-
 export async function pushWorktree(cwd: string): Promise<GitActionResult> {
   const current = await getCurrentBranch(cwd)
   const { stdout, stderr, exitCode } = await runGit(cwd, ['push', '-u', 'origin', current])
@@ -602,23 +649,13 @@ export async function mergeBranch(
   }
 }
 
-export async function updateBaseBranch(cwd: string, baseBranch: string): Promise<GitActionResult> {
-  let base = baseBranch
-  const localBaseExists = await refExists(cwd, `refs/heads/${base}`)
-  const remoteBaseExists = await refExists(cwd, `refs/remotes/origin/${base}`)
-  if (!localBaseExists && !remoteBaseExists) {
-    const defaultBranch = await getDefaultBranch(cwd)
-    if (!defaultBranch) {
-      return { success: false, output: 'Could not determine a base branch to update' }
-    }
-    base = defaultBranch
-  }
-
-  const current = await getCurrentBranch(cwd)
-  if (current === base) {
-    return pullWorktree(cwd)
-  }
-
+/**
+ * Bring the local base branch up to origin *without* touching this worktree —
+ * a plain ref update, which git allows only when it fast-forwards. The caller
+ * (`updateBaseBranch`) handles the case where the base is checked out here,
+ * because that one moves a working tree and needs the sync engine's safety net.
+ */
+export async function fetchBaseBranch(cwd: string, base: string): Promise<GitActionResult> {
   const { exitCode } = await runGit(cwd, ['fetch', 'origin', `${base}:${base}`])
   if (exitCode === 0) {
     return { success: true, output: `Updated ${base} from origin` }

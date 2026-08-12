@@ -20,11 +20,11 @@ export async function lookupPullRequest(
   const withToken: ProviderConfig = { ...provider, personalAccessToken: token }
 
   if (withToken.type === 'github') {
-    return lookupGitHubPullRequest(branch, withToken)
+    return lookupGitHubPullRequest(branch, repository.baseBranch || 'main', withToken)
   }
 
   if (withToken.type === 'azure') {
-    return lookupAzureDevOpsPullRequest(branch, withToken, isJwt)
+    return lookupAzureDevOpsPullRequest(branch, repository.baseBranch || 'main', withToken, isJwt)
   }
 
   return undefined
@@ -32,6 +32,7 @@ export async function lookupPullRequest(
 
 async function lookupGitHubPullRequest(
   branch: string,
+  baseBranch: string,
   provider: ProviderConfig
 ): Promise<PullRequest | undefined> {
   const { organization, repository, personalAccessToken } = provider
@@ -64,7 +65,17 @@ async function lookupGitHubPullRequest(
     base?: { ref?: string }
   }>
 
-  const pr = data[0]
+  // An active PR is the row's current state. Otherwise prefer a merged PR into
+  // the configured base: branch names get reused, and the newest historical PR
+  // may be an abandoned experiment targeting a different branch even though an
+  // older PR already landed this branch in main.
+  const pr =
+    data.find((candidate) => candidate.state === 'open') ??
+    data.find(
+      (candidate) =>
+        candidate.state === 'closed' && candidate.merged === true && candidate.base?.ref === baseBranch
+    ) ??
+    data[0]
   if (!pr) return undefined
 
   let state: PullRequest['state'] = pr.draft ? 'draft' : pr.state === 'open' ? 'open' : 'closed'
@@ -82,6 +93,7 @@ async function lookupGitHubPullRequest(
 
 async function lookupAzureDevOpsPullRequest(
   branch: string,
+  baseBranch: string,
   provider: ProviderConfig,
   isJwt = false
 ): Promise<PullRequest | undefined> {
@@ -120,9 +132,17 @@ async function lookupAzureDevOpsPullRequest(
         targetRefName?: string
       }>
     }
-    const pr = data.value
+    const ordered = data.value
       ?.slice()
-      .sort((a, b) => +(b.creationDate ?? 0) - +(a.creationDate ?? 0))[0]
+      .sort((a, b) => +(b.creationDate ?? 0) - +(a.creationDate ?? 0))
+    const pr =
+      ordered?.find((candidate) => candidate.status === 'active') ??
+      ordered?.find(
+        (candidate) =>
+          candidate.status === 'completed' &&
+          candidate.targetRefName?.replace(/^refs\/heads\//, '') === baseBranch
+      ) ??
+      ordered?.[0]
     if (!pr) return undefined
 
     let state: PullRequest['state'] = pr.isDraft ? 'draft' : 'open'

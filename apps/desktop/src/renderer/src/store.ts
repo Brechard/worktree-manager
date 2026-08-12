@@ -1,5 +1,12 @@
 import { create } from 'zustand'
-import type { Repository, Worktree, AppSettings, WorktreeStatus, ScanProgress } from '@worktree/contracts'
+import type {
+  Repository,
+  Worktree,
+  AppSettings,
+  WorktreeStatus,
+  WorktreeDiskUsage,
+  ScanProgress,
+} from '@worktree/contracts'
 
 interface AppState {
   view: 'onboarding' | 'dashboard' | 'settings'
@@ -7,6 +14,8 @@ interface AppState {
   repositories: Repository[]
   worktrees: Worktree[]
   statuses: Record<string, WorktreeStatus>
+  /** Measured on demand, keyed by worktree id; absent until a project is opened. */
+  diskUsage: Record<string, WorktreeDiskUsage>
   scanProgress: ScanProgress | null
   selectedRepositoryId: string | null
   setView: (view: AppState['view']) => void
@@ -16,6 +25,8 @@ interface AppState {
   setStatuses: (statuses: WorktreeStatus[], scopeWorktreeIds?: string[]) => void
   setStatus: (worktreeId: string, status: WorktreeStatus) => void
   removeStatuses: (worktreeIds: string[]) => void
+  setDiskUsage: (usage: WorktreeDiskUsage) => void
+  removeDiskUsage: (worktreeIds: string[]) => void
   applyBranchChange: (worktreeId: string, branch: string) => void
   updateRepository: (repository: Repository) => void
   setScanProgress: (progress: AppState['scanProgress']) => void
@@ -28,6 +39,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   repositories: [],
   worktrees: [],
   statuses: {},
+  diskUsage: {},
   scanProgress: null,
   selectedRepositoryId: null,
 
@@ -65,6 +77,17 @@ export const useAppStore = create<AppState>((set, get) => ({
         if (!drop.has(worktreeId)) next[worktreeId] = status
       }
       return { statuses: next }
+    }),
+  setDiskUsage: (usage) =>
+    set((state) => ({ diskUsage: { ...state.diskUsage, [usage.worktreeId]: usage } })),
+  removeDiskUsage: (worktreeIds) =>
+    set((state) => {
+      const drop = new Set(worktreeIds)
+      const next: Record<string, WorktreeDiskUsage> = {}
+      for (const [worktreeId, usage] of Object.entries(state.diskUsage)) {
+        if (!drop.has(worktreeId)) next[worktreeId] = usage
+      }
+      return { diskUsage: next }
     }),
   // Show a branch switch the instant it is known — before the targeted refresh,
   // which fetches the base ref over the network and can take seconds. The PR

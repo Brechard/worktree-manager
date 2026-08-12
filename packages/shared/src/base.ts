@@ -66,11 +66,17 @@ export async function refreshBaseBranch(
   const remoteRef = `refs/remotes/origin/${baseBranch}`
 
   try {
+    // Two refspecs, one round trip. The first guarantees the base ref this
+    // snapshot is about; the second is git's standard remote-tracking refspec,
+    // which is what makes every worktree's own `origin/<branch>` current — and
+    // so what lets a row say "2 commits to pull" instead of silently comparing
+    // against whatever was last fetched by hand.
     const fetchResult = await runGit(cwd, [
       'fetch',
       '--no-tags',
       'origin',
       `${baseBranch}:${remoteRef}`,
+      '+refs/heads/*:refs/remotes/origin/*',
     ])
     const fetchError =
       fetchResult.exitCode === 0

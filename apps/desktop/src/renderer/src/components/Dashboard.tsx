@@ -11,21 +11,27 @@ import {
   ArrowDownUp,
   Clock3,
   ShieldCheck,
+  HardDrive,
+  Trash2,
 } from 'lucide-react'
 import type {
   AppSettings,
   Repository,
   RepositoryBaseStatus,
   Worktree,
+  WorktreeDiskUsage,
   WorktreeSort,
   WorktreeSortDirection,
   WorktreeStatus,
 } from '@worktree/contracts'
+import { formatBytes } from '@worktree/contracts'
 import { useAppStore } from '../store'
 import { useDashboard, defaultDirectionFor } from '../hooks/useDashboard'
 import { api } from '../api'
 import { WorktreeRow } from './WorktreeRow'
+import type { ProjectCatchUp } from '../lib/catchUp'
 import { ProjectConfigModal } from './ProjectConfigModal'
+import { CleanupCandidatesModal } from './CleanupCandidatesModal'
 import { Loading } from './Loading'
 import { EditorPicker } from './EditorPicker'
 import { TitleBar } from './TitleBar'
@@ -200,6 +206,11 @@ interface DashboardProjectHeaderProps {
   settings: AppSettings | null
   editorOptions: EditorOption[]
   editorIcons: Record<string, string>
+  /** Totals across the project's worktrees, and how much of it is generated. */
+  disk: { totalBytes: number; reclaimableBytes: number; measuring: boolean }
+  cleanupSummary: { ready: number; review: number; bytes: number; measuring: boolean }
+  openCleanupCandidates: () => void
+  remeasureDisk: () => void
   updateRepo: (id: string, patch: Partial<Repository>) => void
   setConfigRepoId: (value: string | null) => void
   loadStatuses: () => void
@@ -213,11 +224,16 @@ function DashboardProjectHeader({
   settings,
   editorOptions,
   editorIcons,
+  disk,
+  cleanupSummary,
+  openCleanupCandidates,
+  remeasureDisk,
   updateRepo,
   setConfigRepoId,
   loadStatuses,
   updateSelectedBase,
 }: DashboardProjectHeaderProps) {
+  const cleanupCount = cleanupSummary.ready + cleanupSummary.review
   return (
     <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-5 py-4">
       <div className="min-w-0">
@@ -258,6 +274,63 @@ function DashboardProjectHeader({
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
+        {/* Every worktree of this project is a full copy of its dependencies
+            and build output, so the project total is the number that explains
+            where the disk went — and the button next to it is what gives it
+            back. */}
+        {(disk.totalBytes > 0 || disk.measuring) && (
+          <button
+            type="button"
+            onClick={remeasureDisk}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1.5 text-xs hover:bg-accent"
+            title={`Every worktree of ${selectedRepo.name}, measured on disk${
+              disk.reclaimableBytes > 0
+                ? `. ${formatBytes(disk.reclaimableBytes)} of it is generated (dependencies, build output) and rebuilds from source.`
+                : '.'
+            }\n\nClick to measure again.`}
+          >
+            {disk.measuring ? (
+              <RefreshCw className="h-3.5 w-3.5 animate-spin text-muted" />
+            ) : (
+              <HardDrive className="h-3.5 w-3.5 text-muted" />
+            )}
+            {/* A partial sum is honest only if it says so — the "+" is what
+                keeps a half-measured project from reading as a small one. */}
+            <span className="font-medium">
+              {formatBytes(disk.totalBytes)}
+              {disk.measuring ? '+' : ''}
+            </span>
+            {disk.reclaimableBytes > 0 && (
+              <span className="text-primary">· {formatBytes(disk.reclaimableBytes)} generated</span>
+            )}
+          </button>
+        )}
+
+        {cleanupCount > 0 && (
+          <button
+            type="button"
+            onClick={openCleanupCandidates}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-warning/40 bg-warning/10 px-2.5 py-1.5 text-xs font-medium text-warning hover:bg-warning/20"
+            title={
+              `${cleanupSummary.ready} merged, clean and pushed` +
+              (cleanupSummary.review > 0
+                ? `\n${cleanupSummary.review} merged but still holding uncommitted or unpushed work`
+                : '') +
+              (cleanupSummary.bytes > 0
+                ? `\n\nRemoving them reclaims up to ${formatBytes(cleanupSummary.bytes)} of allocated space.`
+                : '')
+            }
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            Clean up {cleanupCount}
+            {cleanupSummary.bytes > 0 && (
+              <span className="font-normal opacity-80">
+                {` · ${formatBytes(cleanupSummary.bytes)}${cleanupSummary.measuring ? '+' : ''}`}
+              </span>
+            )}
+          </button>
+        )}
+
         <label className="flex items-center gap-2 rounded-md border border-border bg-card px-2.5 py-1.5 text-xs">
           <span className="text-muted">Open with</span>
           <EditorPicker
@@ -387,10 +460,14 @@ interface DashboardWorktreeListProps {
   worktreeSections: ReturnType<typeof import('../lib/worktreeSorting').groupWorktrees>
   repoWorktrees: Worktree[]
   statuses: Record<string, WorktreeStatus>
+  diskUsage: Record<string, WorktreeDiskUsage>
+  measuringIds: Set<string>
+  reclaimSpace: (worktree: Worktree) => void
   refreshingIds: Set<string>
   cleaningIds: Set<string>
   effectiveEditor: string
   selectedRepo: Repository
+  catchUp: ProjectCatchUp
   handleDelete: (w: Worktree) => void
   onActionError: (message: string) => void
   loadStatuses: () => void
@@ -405,10 +482,14 @@ function DashboardWorktreeList({
   worktreeSections,
   repoWorktrees,
   statuses,
+  diskUsage,
+  measuringIds,
+  reclaimSpace,
   refreshingIds,
   cleaningIds,
   effectiveEditor,
   selectedRepo,
+  catchUp,
   handleDelete,
   onActionError,
   loadStatuses,
@@ -472,7 +553,11 @@ function DashboardWorktreeList({
                     status={statuses[w.id]}
                     refreshing={refreshingIds.has(w.id)}
                     cleaning={cleaningIds.has(w.id)}
+                    diskUsage={diskUsage[w.id]}
+                    measuring={measuringIds.has(w.id)}
+                    onReclaim={reclaimSpace}
                     editorId={effectiveEditor}
+                    catchUp={catchUp}
                     onDelete={handleDelete}
                     onActionError={onActionError}
                     onRefresh={loadStatuses}
@@ -537,6 +622,59 @@ export function Dashboard() {
       ),
     [availableEditorIds, ctx.settings?.defaultEditor, ctx.selectedRepo?.preferredEditor]
   )
+
+  // What the primary worktree's "back to base and update everything" would do.
+  // Counted off the project's full worktree list rather than the filtered view,
+  // since the sweep does not care what the search box is showing.
+  const selectedRepoId = ctx.selectedRepo?.id
+  const catchUp = useMemo<ProjectCatchUp>(() => {
+    const repo = ctx.repositories.find((r) => r.id === selectedRepoId)
+    const base = repo?.baseBranch || 'main'
+    const baseState = selectedRepoId ? ctx.baseStatuses[selectedRepoId]?.state : undefined
+    let worktreeCount = 0
+    for (const w of ctx.worktrees) {
+      if (w.repositoryId !== selectedRepoId || w.isMain || w.prunable) continue
+      const branch = ctx.statuses[w.id]?.branch ?? w.branch
+      if (branch === base || branch === 'HEAD') continue
+      worktreeCount += 1
+    }
+    return {
+      baseOutdated: baseState === 'behind' || baseState === 'diverged',
+      worktreeCount,
+      running: ctx.catchingUp,
+      run: () => {
+        if (selectedRepoId) void ctx.catchUpProject(selectedRepoId)
+      },
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    selectedRepoId,
+    ctx.repositories,
+    ctx.worktrees,
+    ctx.statuses,
+    ctx.baseStatuses,
+    ctx.catchingUp,
+    ctx.catchUpProject,
+  ])
+
+  // The project's own footprint: the sum of what its worktrees measured, plus
+  // whether anything is still being counted so the number can say so.
+  const disk = useMemo(() => {
+    let totalBytes = 0
+    let reclaimableBytes = 0
+    let measuring = false
+    for (const w of ctx.worktrees) {
+      if (w.repositoryId !== selectedRepoId || w.prunable) continue
+      const usage = ctx.diskUsage[w.id]
+      if (!usage) {
+        measuring = true
+        continue
+      }
+      totalBytes += usage.totalBytes
+      reclaimableBytes += usage.reclaimableBytes
+    }
+    return { totalBytes, reclaimableBytes, measuring }
+  }, [selectedRepoId, ctx.worktrees, ctx.diskUsage])
 
   useEffect(() => {
     const editorIds = editorOptions.map((option) => option.id)
@@ -636,10 +774,16 @@ export function Dashboard() {
               <DashboardProjectHeader
                 selectedRepo={ctx.selectedRepo}
                 baseStatus={ctx.baseStatuses[ctx.selectedRepo.id]}
-                baseBusy={ctx.loading || ctx.baseUpdating}
+                baseBusy={ctx.loading || ctx.baseUpdating || ctx.catchingUp}
                 settings={ctx.settings}
                 editorOptions={editorOptions}
                 editorIcons={editorIcons}
+                disk={disk}
+                cleanupSummary={ctx.cleanupSummary}
+                openCleanupCandidates={() => ctx.openCleanupCandidates(ctx.selectedRepo!.id)}
+                remeasureDisk={() => {
+                  void ctx.measureRepoDisk(ctx.selectedRepo!.id, { refresh: true })
+                }}
                 updateRepo={ctx.updateRepo}
                 setConfigRepoId={ctx.setConfigRepoId}
                 loadStatuses={() => {
@@ -663,10 +807,14 @@ export function Dashboard() {
                 worktreeSections={ctx.worktreeSections}
                 repoWorktrees={ctx.repoWorktrees}
                 statuses={ctx.statuses}
+                diskUsage={ctx.diskUsage}
+                measuringIds={ctx.measuringIds}
+                reclaimSpace={(w) => void ctx.reclaimSpace(w)}
                 refreshingIds={ctx.refreshingIds}
                 cleaningIds={ctx.cleaningIds}
                 effectiveEditor={ctx.effectiveEditor}
                 selectedRepo={ctx.selectedRepo}
+                catchUp={catchUp}
                 handleDelete={ctx.handleDelete}
                 onActionError={ctx.onActionError}
                 loadStatuses={() => {
@@ -689,6 +837,25 @@ export function Dashboard() {
           onSave={ctx.saveRepository}
         />
       )}
+
+      {ctx.cleanupCandidates &&
+        (() => {
+          const repo = ctx.repositories.find((r) => r.id === ctx.cleanupCandidates!.repositoryId)
+          if (!repo) return null
+          return (
+            <CleanupCandidatesModal
+              repositoryName={repo.name}
+              baseBranch={repo.baseBranch || 'main'}
+              candidates={ctx.cleanupCandidates.candidates}
+              diskUsage={ctx.diskUsage}
+              measuringIds={ctx.measuringIds}
+              onCancel={ctx.dismissCleanupCandidates}
+              onConfirm={(selected, permanent) =>
+                void ctx.deleteCleanupCandidates(selected, permanent)
+              }
+            />
+          )
+        })()}
     </div>
   )
 }

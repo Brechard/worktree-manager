@@ -38,11 +38,12 @@ export async function runGit(
 export async function runCommand(
   command: string,
   args: string[],
-  options?: { cwd?: string; timeout?: number; shell?: boolean }
+  options?: { cwd?: string; timeout?: number; shell?: boolean; maxBuffer?: number }
 ): Promise<ExecResult> {
   return execFileAsync(command, args, {
     cwd: options?.cwd,
     timeout: options?.timeout ?? 30000,
+    maxBuffer: options?.maxBuffer ?? 8 * 1024 * 1024,
     windowsHide: true,
     shell: options?.shell ?? false,
   })

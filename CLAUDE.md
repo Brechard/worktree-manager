@@ -15,12 +15,18 @@ stripped: prefix commands with `env -u ELECTRON_RUN_AS_NODE`.
 - Package macOS release (arm64 only): `cd apps/desktop && npm run dist`
 - Dev (hot-reload renderer + main): `cd apps/desktop && env -u ELECTRON_RUN_AS_NODE npx electron-vite dev`
 - Run the built app: `cd apps/desktop && env -u ELECTRON_RUN_AS_NODE node_modules/electron/dist/Electron.app/Contents/MacOS/Electron dist-electron/main/index.cjs`
+- Launch the *installed* app the same way — `open -a "Worktree Manager"` forwards
+  `ELECTRON_RUN_AS_NODE` too, so it exits silently unless you use
+  `env -u ELECTRON_RUN_AS_NODE open -a "Worktree Manager"`.
+- Verify against a throwaway profile instead of the user's: add
+  `--user-data-dir=/tmp/wt-verify` and seed `/tmp/wt-verify/config/{settings,repositories,worktrees}.json`
+  (copy a couple of entries from the real config, minus tokens). Their live app can keep running.
 - Screenshot the running app (macOS): focus its window, then `screencapture -o -x /tmp/shot.png`
 - Drive the running app (agent-browser via CDP): launch with `--remote-debugging-port=9222`, then
   `agent-browser connect "$(curl -s localhost:9222/json/list | python3 -c "import sys,json;print(next(t['webSocketDebuggerUrl'] for t in json.load(sys.stdin) if t['type']=='page'))")"`.
-  Connect to the **page** websocket, not the bare port (the port target is a blank page). CDP
-  screenshots of this window come back blank — use `screencapture` for pixels; use agent-browser
-  only for `snapshot`/`click`/`fill`. Heads-up: if the user is testing the app at the same time,
+  Connect to the **page** websocket, not the bare port (the port target is a blank page).
+  `Page.captureScreenshot` with `captureBeyondViewport: true` does return real pixels (and beats
+  `screencapture`, which catches whatever window is on top instead). Heads-up: if the user is testing the app at the same time,
   your clicks fight theirs — ask or hold off rather than driving it out from under them.
 
 Gotcha: plain `npm run dev` (turbo → bun) inherits `ELECTRON_RUN_AS_NODE` and fails the same way —

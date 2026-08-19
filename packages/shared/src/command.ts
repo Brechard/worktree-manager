@@ -119,9 +119,20 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`
 }
 
-/** Escape for embedding inside an AppleScript `"…"` literal. */
+/**
+ * Escape for embedding inside an AppleScript `"…"` literal.
+ *
+ * Newlines have to become `\n` escapes rather than travel literally: AppleScript
+ * string literals cannot span lines, so a multi-line command would otherwise
+ * fail to compile and the action would silently fall back to the script-file
+ * route. Escaped, `do script` types the line breaks and runs every line.
+ */
 function appleScriptQuote(value: string): string {
-  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+  return value
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\r\n?/g, '\\n')
+    .replace(/\n/g, '\\n')
 }
 
 /**

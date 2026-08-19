@@ -31,6 +31,7 @@ import {
   getHeadCommit,
   getWorktreeDetails,
   getWorktreeStatus,
+  hydrateShellPath,
   mergeBranch,
   parseProviderFromRemoteUrl,
   pruneWorktrees,
@@ -481,6 +482,10 @@ async function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  // Before anything spawns a child process: a Finder-launched app only has the
+  // bare launchd PATH, which hides Homebrew tools like `az` and `gh`.
+  await hydrateShellPath()
+
   await migrateLegacyConfig()
   nativeTheme.themeSource = 'system'
 

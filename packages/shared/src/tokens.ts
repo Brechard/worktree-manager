@@ -18,8 +18,9 @@ export async function detectProviderToken(
       if (exitCode === 0 && stdout.trim().length > 8) {
         return { provider: 'github', token: stdout.trim(), source: 'gh auth token' }
       }
-    } catch {
-      // ignore
+    } catch (error) {
+      // Almost always ENOENT: the binary is not on the app's PATH.
+      console.warn('[tokens] gh auth token failed:', error)
     }
   }
 
@@ -40,8 +41,8 @@ export async function detectProviderToken(
       if (exitCode === 0 && stdout.trim().length > 8) {
         return { provider: 'azure', token: stdout.trim(), source: 'az account get-access-token' }
       }
-    } catch {
-      // ignore
+    } catch (error) {
+      console.warn('[tokens] az account get-access-token failed:', error)
     }
   }
 

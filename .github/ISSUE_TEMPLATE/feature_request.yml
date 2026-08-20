@@ -1,0 +1,32 @@
+name: Feature request
+description: Suggest something the app should do
+labels: ['enhancement']
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What's the problem?
+      description: >
+        What are you doing today instead, and what's annoying about it? A concrete
+        situation helps more than a proposed solution.
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like it to do?
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part of the app?
+      options:
+        - Worktree list / status
+        - Safety and deletion
+        - Pull request integration
+        - Disk reclaim
+        - Git actions
+        - Editors and terminals
+        - Project settings
+        - Something else

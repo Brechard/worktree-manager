@@ -1,0 +1,57 @@
+name: Bug report
+description: Something in the app is wrong or broken
+labels: ['bug']
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open the ... project
+        2. Click ...
+        3. The row shows ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Windows
+        - Linux
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: App version
+      description: Shown in Settings. If you built from source, the commit SHA.
+    validations:
+      required: true
+
+  - type: textarea
+    id: git-output
+    attributes:
+      label: What git says
+      description: >
+        If a worktree's status looks wrong, paste the output of `git status -sb` and
+        `git log --oneline -1` from that worktree. This is usually the fastest way to
+        find the bug.
+      render: shell
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Screenshot or anything else

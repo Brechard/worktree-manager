@@ -106,11 +106,15 @@ terminal or a file manager at the worktree path.
 Grab the latest build for your platform from the
 [**releases page**](https://github.com/Brechard/worktree-manager/releases/latest).
 
-| Platform              | File                                   |
-| --------------------- | -------------------------------------- |
-| macOS (Apple Silicon) | `Worktree Manager-<version>-arm64.dmg` |
-| Windows (x64 / arm64) | `Worktree Manager Setup <version>.exe` |
-| Linux (x64 / arm64)   | `Worktree Manager-<version>.AppImage`  |
+| Platform              | File                                        |
+| --------------------- | ------------------------------------------- |
+| macOS (Apple Silicon) | `Worktree.Manager-<version>-arm64.dmg`      |
+| Windows               | `Worktree.Manager.Setup.<version>.exe`      |
+| Linux (x64)           | `Worktree.Manager-<version>.AppImage`       |
+| Linux (arm64)         | `Worktree.Manager-<version>-arm64.AppImage` |
+
+Intel Macs are not built right now — the macOS target is arm64 only. Build from source
+if you're on one.
 
 **macOS:** the builds are not code-signed yet, so Gatekeeper will refuse the first launch.
 Clear the quarantine flag once after moving the app to `/Applications`:
@@ -122,7 +126,7 @@ xattr -dr com.apple.quarantine "/Applications/Worktree Manager.app"
 **Linux:** make the AppImage executable before running it.
 
 ```bash
-chmod +x "Worktree Manager-"*.AppImage
+chmod +x Worktree.Manager-*.AppImage
 ```
 
 ### Build from source

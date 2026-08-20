@@ -63,9 +63,10 @@ export function parseProviderFromRemoteUrl(remoteUrl: string): ProviderConfig | 
       // path: project/_git/repo  OR DefaultCollection/project/_git/repo
       const gitIdx = parts.indexOf('_git')
       if (gitIdx >= 1 && parts[gitIdx + 1]) {
-        const project = parts[gitIdx - 1] === 'DefaultCollection' && gitIdx >= 2
-          ? parts[gitIdx - 1]!
-          : parts[gitIdx - 1]!
+        const project =
+          parts[gitIdx - 1] === 'DefaultCollection' && gitIdx >= 2
+            ? parts[gitIdx - 1]!
+            : parts[gitIdx - 1]!
         const repo = parts[gitIdx + 1]!
         return {
           type: 'azure',

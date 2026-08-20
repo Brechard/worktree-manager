@@ -342,9 +342,13 @@ async function resolveAppIconPngPath(appPath: string): Promise<string | undefine
   let iconFile: string | undefined
 
   try {
-    const result = await runCommand('/usr/libexec/PlistBuddy', ['-c', 'Print CFBundleIconFile', plistPath], {
-      timeout: 4000,
-    })
+    const result = await runCommand(
+      '/usr/libexec/PlistBuddy',
+      ['-c', 'Print CFBundleIconFile', plistPath],
+      {
+        timeout: 4000,
+      }
+    )
     if (result.exitCode === 0) {
       const raw = result.stdout.trim()
       if (raw) iconFile = raw
@@ -402,12 +406,16 @@ async function getEditorIconDataUrl(editorId: string): Promise<string | undefine
         icon = nativeImage.createFromPath(iconFile)
       } else if (iconFile.toLowerCase().endsWith('.icns')) {
         const pngPath = join(tmpdir(), `worktree-icon-${editorId}.png`)
-        const result = await runCommand('/usr/bin/sips', ['-s', 'format', 'png', iconFile, '--out', pngPath], {
-          timeout: 5000,
-        })
+        const result = await runCommand(
+          '/usr/bin/sips',
+          ['-s', 'format', 'png', iconFile, '--out', pngPath],
+          {
+            timeout: 5000,
+          }
+        )
         if (result.exitCode === 0 && existsSync(pngPath)) {
           icon = nativeImage.createFromPath(pngPath)
-          void unlink(pngPath).catch(() => { })
+          void unlink(pngPath).catch(() => {})
         }
       }
     }
@@ -562,9 +570,7 @@ function statusCwd(repository: Repository, worktrees: Worktree[]): string {
   if (existsSync(repository.path)) return repository.path
   return (
     worktrees.find(
-      (worktree) =>
-        worktree.repositoryId === repository.id &&
-        existsSync(worktree.path)
+      (worktree) => worktree.repositoryId === repository.id && existsSync(worktree.path)
     )?.path ?? repository.path
   )
 }
@@ -598,10 +604,7 @@ const statusFetchSemaphore = createSemaphore(6)
 
 ipcMain.handle(
   'get-worktree-statuses',
-  async (
-    event,
-    args: { worktrees: Worktree[]; repositories: Repository[]; scopeId?: string }
-  ) => {
+  async (event, args: { worktrees: Worktree[]; repositories: Repository[]; scopeId?: string }) => {
     const settings = await loadSettings()
     const azureToken = await resolveAzureToken(settings.azureToken)
     const globalTokens = {
@@ -618,7 +621,9 @@ ipcMain.handle(
       event.sender.send('status-progress', { scopeId, current: done, total })
     emitProgress()
 
-    const repositoriesById = new Map(args.repositories.map((repository) => [repository.id, repository]))
+    const repositoriesById = new Map(
+      args.repositories.map((repository) => [repository.id, repository])
+    )
 
     // Start base-branch fetches per repository in parallel with the per-worktree
     // status calls. Each worktree waits only for its own repository's base snapshot
@@ -827,10 +832,7 @@ ipcMain.handle(
 // plumbing, so the renderer can re-sync only the rows that actually moved.
 ipcMain.handle(
   'get-worktree-branches',
-  async (
-    _,
-    args: { worktrees: Worktree[] }
-  ): Promise<{ worktreeId: string; branch: string }[]> => {
+  async (_, args: { worktrees: Worktree[] }): Promise<{ worktreeId: string; branch: string }[]> => {
     const entries = await Promise.all(
       args.worktrees.map(async (worktree) => {
         if (worktree.prunable) return undefined
@@ -918,7 +920,10 @@ ipcMain.handle(
 
 ipcMain.handle(
   'sync-with-base',
-  async (_, args: { path: string; baseBranch: string; target?: SyncTarget; mode?: SyncBaseMode }) => {
+  async (
+    _,
+    args: { path: string; baseBranch: string; target?: SyncTarget; mode?: SyncBaseMode }
+  ) => {
     return syncWithBase({
       cwd: args.path,
       baseBranch: args.baseBranch,
@@ -967,11 +972,7 @@ ipcMain.handle(
   'open-in-terminal',
   async (
     _,
-    {
-      path,
-      terminal,
-      subdirectory,
-    }: { path: string; terminal?: string; subdirectory?: string }
+    { path, terminal, subdirectory }: { path: string; terminal?: string; subdirectory?: string }
   ) => {
     const settings = await loadSettings()
     const term = terminal || settings.defaultTerminal
@@ -1064,10 +1065,16 @@ ipcMain.handle(
       const requiresSafetyValidation = permanent || deleteBranch === true
       if (requiresSafetyValidation) {
         if (!worktree || !repository || !expectedStatus) {
-          return { success: false, error: 'Automatic branch deletion requires a fresh safety check.' }
+          return {
+            success: false,
+            error: 'Automatic branch deletion requires a fresh safety check.',
+          }
         }
         if (path !== worktree.path || repoPath !== repository.path) {
-          return { success: false, error: 'The deletion target does not match the verified worktree.' }
+          return {
+            success: false,
+            error: 'The deletion target does not match the verified worktree.',
+          }
         }
         const settings = await loadSettings()
         const azureToken = await resolveAzureToken(settings.azureToken)

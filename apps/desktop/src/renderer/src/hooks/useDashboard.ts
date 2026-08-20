@@ -328,10 +328,7 @@ export function useDashboard(): UseDashboardReturn {
           ...(refresh ? { refresh: true } : {}),
         })
         // The worktree may have been deleted while `du` was walking it.
-        if (
-          isCurrent() &&
-          useAppStore.getState().worktrees.some((w) => w.id === worktree.id)
-        ) {
+        if (isCurrent() && useAppStore.getState().worktrees.some((w) => w.id === worktree.id)) {
           setDiskUsage(usage)
         }
       } catch {
@@ -349,8 +346,7 @@ export function useDashboard(): UseDashboardReturn {
       if (measuringReposRef.current.has(repositoryId)) return
       const state = useAppStore.getState()
       const targets = state.worktrees.filter(
-        (w) =>
-          w.repositoryId === repositoryId && !w.prunable && (refresh || !state.diskUsage[w.id])
+        (w) => w.repositoryId === repositoryId && !w.prunable && (refresh || !state.diskUsage[w.id])
       )
       if (targets.length === 0) return
 
@@ -840,12 +836,7 @@ export function useDashboard(): UseDashboardReturn {
         if (!status?.dirty && !status?.staged && !status?.hasUntracked) continue
       } else if (filter === 'unmerged') {
         const branch = status?.branch ?? w.branch
-        if (
-          !status ||
-          status.mergedIntoBase ||
-          branch === status.baseBranch ||
-          branch === 'HEAD'
-        ) {
+        if (!status || status.mergedIntoBase || branch === status.baseBranch || branch === 'HEAD') {
           continue
         }
       } else if (filter === 'unpushed') {

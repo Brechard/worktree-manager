@@ -71,7 +71,8 @@ export async function getWorktreeStatus(options: StatusOptions): Promise<Worktre
 
   // Comparisons against the base use the same freshly-fetched ref the merged
   // check does, so "3 behind main" and "unmerged" can never disagree.
-  const baseFullRef = baseSnapshot?.mergeRef ?? (await resolveBaseRef(cwd, baseBranch).catch(() => undefined))
+  const baseFullRef =
+    baseSnapshot?.mergeRef ?? (await resolveBaseRef(cwd, baseBranch).catch(() => undefined))
 
   let statusReadError: string | undefined
   const statusPromise = getStatusPorcelain(cwd).catch((error) => {

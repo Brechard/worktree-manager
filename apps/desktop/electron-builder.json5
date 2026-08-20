@@ -3,33 +3,30 @@
   productName: 'Worktree Manager',
   directories: {
     output: 'release',
-    buildResources: 'resources'
+    buildResources: 'resources',
   },
   icon: 'resources/icon.png',
-  files: [
-    'dist-electron',
-    'package.json'
-  ],
+  files: ['dist-electron', 'package.json'],
   mac: {
     icon: 'resources/icon.icns',
     artifactName: '${productName}-${version}-${arch}.${ext}',
     category: 'public.app-category.developer-tools',
     target: [
       { target: 'dmg', arch: ['arm64'] },
-      { target: 'zip', arch: ['arm64'] }
-    ]
+      { target: 'zip', arch: ['arm64'] },
+    ],
   },
   win: {
     target: [
       { target: 'nsis', arch: ['x64', 'arm64'] },
-      { target: 'zip', arch: ['x64', 'arm64'] }
-    ]
+      { target: 'zip', arch: ['x64', 'arm64'] },
+    ],
   },
   linux: {
     category: 'Development',
     target: [
       { target: 'AppImage', arch: ['x64', 'arm64'] },
-      { target: 'zip', arch: ['x64', 'arm64'] }
-    ]
-  }
+      { target: 'zip', arch: ['x64', 'arm64'] },
+    ],
+  },
 }

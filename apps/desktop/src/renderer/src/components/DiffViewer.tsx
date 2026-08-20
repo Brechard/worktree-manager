@@ -4,9 +4,7 @@ import { cn } from '../lib/utils'
 const toggleClass = (active: boolean) =>
   cn(
     'rounded-md px-2 py-0.5 text-[10px] font-medium transition-colors',
-    active
-      ? 'bg-primary text-primary-foreground shadow-sm'
-      : 'text-muted hover:text-foreground'
+    active ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted hover:text-foreground'
   )
 
 const cellClass = (type: DiffLine['type']) =>
@@ -87,7 +85,15 @@ export function parseDiff(diff: string): DiffLine[] {
       const n = side === 'new' ? newLine || undefined : undefined
       if (side === 'old' && oldLine) oldLine++
       if (side === 'new' && newLine) newLine++
-      lines.push({ id: id++, type: 'submodule', raw, oldLine: o, newLine: n, hash: submoduleMatch[2], side })
+      lines.push({
+        id: id++,
+        type: 'submodule',
+        raw,
+        oldLine: o,
+        newLine: n,
+        hash: submoduleMatch[2],
+        side,
+      })
     } else if (prefix === ' ') {
       const o = oldLine || undefined
       const n = newLine || undefined
@@ -126,23 +132,38 @@ export function DiffViewer({
   const source = context === 'full' ? fullDiff : diff
   const lines = useMemo(() => parseDiff(source), [source])
 
-
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2">
         <div className="inline-flex items-center gap-0.5 rounded-lg bg-accent p-0.5">
-          <button type="button" onClick={() => setMode('unified')} className={toggleClass(mode === 'unified')}>
+          <button
+            type="button"
+            onClick={() => setMode('unified')}
+            className={toggleClass(mode === 'unified')}
+          >
             Unified
           </button>
-          <button type="button" onClick={() => setMode('split')} className={toggleClass(mode === 'split')}>
+          <button
+            type="button"
+            onClick={() => setMode('split')}
+            className={toggleClass(mode === 'split')}
+          >
             Side by side
           </button>
         </div>
         <div className="inline-flex items-center gap-0.5 rounded-lg bg-accent p-0.5">
-          <button type="button" onClick={() => setContext('diff')} className={toggleClass(context === 'diff')}>
+          <button
+            type="button"
+            onClick={() => setContext('diff')}
+            className={toggleClass(context === 'diff')}
+          >
             Diff only
           </button>
-          <button type="button" onClick={() => setContext('full')} className={toggleClass(context === 'full')}>
+          <button
+            type="button"
+            onClick={() => setContext('full')}
+            className={toggleClass(context === 'full')}
+          >
             Whole file
           </button>
         </div>
@@ -151,101 +172,127 @@ export function DiffViewer({
 
       {!source.trim() && <p className="text-[10px] text-muted">No diff to display.</p>}
 
-      {source.trim() ? (mode === 'unified' ? (
-        <div className="grid max-h-96 grid-cols-[2rem_2rem_1fr] overflow-auto rounded-md border border-border bg-background font-mono text-[10px]">
-          {lines.map((line) => {
-            if (line.type === 'meta' || line.type === 'hunk') {
-              return (
-                <div key={line.id} className={cn(cellClass(line.type), 'col-span-3 whitespace-pre')}>
-                  {line.raw}
-                </div>
-              )
-            }
-            if (line.type === 'submodule') {
+      {source.trim() ? (
+        mode === 'unified' ? (
+          <div className="grid max-h-96 grid-cols-[2rem_2rem_1fr] overflow-auto rounded-md border border-border bg-background font-mono text-[10px]">
+            {lines.map((line) => {
+              if (line.type === 'meta' || line.type === 'hunk') {
+                return (
+                  <div
+                    key={line.id}
+                    className={cn(cellClass(line.type), 'col-span-3 whitespace-pre')}
+                  >
+                    {line.raw}
+                  </div>
+                )
+              }
+              if (line.type === 'submodule') {
+                return (
+                  <div key={line.id} className={cn(cellClass(line.type), 'contents')}>
+                    <div className="text-right text-muted/60 select-none pr-1">
+                      {line.oldLine ?? ''}
+                    </div>
+                    <div className="text-right text-muted/60 select-none pr-1">
+                      {line.newLine ?? ''}
+                    </div>
+                    <div className="overflow-hidden whitespace-pre px-1">{submoduleText(line)}</div>
+                  </div>
+                )
+              }
               return (
                 <div key={line.id} className={cn(cellClass(line.type), 'contents')}>
-                  <div className="text-right text-muted/60 select-none pr-1">{line.oldLine ?? ''}</div>
-                  <div className="text-right text-muted/60 select-none pr-1">{line.newLine ?? ''}</div>
+                  <div className="text-right text-muted/60 select-none pr-1">
+                    {line.oldLine ?? ''}
+                  </div>
+                  <div className="text-right text-muted/60 select-none pr-1">
+                    {line.newLine ?? ''}
+                  </div>
                   <div className="overflow-hidden whitespace-pre px-1">
-                    {submoduleText(line)}
+                    <span className="select-none">
+                      {line.type === 'add' ? '+' : line.type === 'del' ? '-' : ' '}
+                    </span>
+                    {line.raw.slice(1)}
                   </div>
                 </div>
               )
-            }
-            return (
-              <div key={line.id} className={cn(cellClass(line.type), 'contents')}>
-                <div className="text-right text-muted/60 select-none pr-1">{line.oldLine ?? ''}</div>
-                <div className="text-right text-muted/60 select-none pr-1">{line.newLine ?? ''}</div>
-                <div className="overflow-hidden whitespace-pre px-1">
-                  <span className="select-none">
-                    {line.type === 'add' ? '+' : line.type === 'del' ? '-' : ' '}
-                  </span>
-                  {line.raw.slice(1)}
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      ) : (
-        <div className="grid max-h-96 grid-cols-[2rem_1fr_2rem_1fr] overflow-auto rounded-md border border-border bg-background font-mono text-[10px]">
-          {lines.map((line) => {
-            if (line.type === 'meta' || line.type === 'hunk') {
-              return (
-                <div key={line.id} className={cn(cellClass(line.type), 'col-span-4 whitespace-pre')}>
-                  {line.raw}
-                </div>
-              )
-            }
-            const content = line.raw.slice(1)
-            if (line.type === 'submodule') {
+            })}
+          </div>
+        ) : (
+          <div className="grid max-h-96 grid-cols-[2rem_1fr_2rem_1fr] overflow-auto rounded-md border border-border bg-background font-mono text-[10px]">
+            {lines.map((line) => {
+              if (line.type === 'meta' || line.type === 'hunk') {
+                return (
+                  <div
+                    key={line.id}
+                    className={cn(cellClass(line.type), 'col-span-4 whitespace-pre')}
+                  >
+                    {line.raw}
+                  </div>
+                )
+              }
+              const content = line.raw.slice(1)
+              if (line.type === 'submodule') {
+                return (
+                  <div key={line.id} className="contents">
+                    <div className="text-right text-amber-400/60 select-none pr-1">
+                      {line.oldLine ?? ''}
+                    </div>
+                    <div className="overflow-hidden whitespace-pre bg-amber-500/10 px-1 text-amber-400">
+                      {line.side === 'old' ? submoduleText(line) : ''}
+                    </div>
+                    <div className="text-right text-amber-400/60 select-none pr-1">
+                      {line.newLine ?? ''}
+                    </div>
+                    <div className="overflow-hidden whitespace-pre bg-amber-500/10 px-1 text-amber-400">
+                      {line.side === 'new' ? submoduleText(line) : ''}
+                    </div>
+                  </div>
+                )
+              }
+              if (line.type === 'add') {
+                return (
+                  <div key={line.id} className="contents">
+                    <div className="bg-rose-500/5" />
+                    <div className="bg-rose-500/5" />
+                    <div className="text-right text-emerald-400/60 select-none pr-1">
+                      {line.newLine ?? ''}
+                    </div>
+                    <div className="overflow-hidden whitespace-pre bg-emerald-500/10 px-1 text-emerald-400">
+                      {content}
+                    </div>
+                  </div>
+                )
+              }
+              if (line.type === 'del') {
+                return (
+                  <div key={line.id} className="contents">
+                    <div className="text-right text-rose-400/60 select-none pr-1">
+                      {line.oldLine ?? ''}
+                    </div>
+                    <div className="overflow-hidden whitespace-pre bg-rose-500/10 px-1 text-rose-400">
+                      {content}
+                    </div>
+                    <div className="bg-emerald-500/5" />
+                    <div className="bg-emerald-500/5" />
+                  </div>
+                )
+              }
               return (
                 <div key={line.id} className="contents">
-                  <div className="text-right text-amber-400/60 select-none pr-1">{line.oldLine ?? ''}</div>
-                  <div className="overflow-hidden whitespace-pre bg-amber-500/10 px-1 text-amber-400">
-                    {line.side === 'old' ? submoduleText(line) : ''}
+                  <div className="text-right text-muted/60 select-none pr-1">
+                    {line.oldLine ?? ''}
                   </div>
-                  <div className="text-right text-amber-400/60 select-none pr-1">{line.newLine ?? ''}</div>
-                  <div className="overflow-hidden whitespace-pre bg-amber-500/10 px-1 text-amber-400">
-                    {line.side === 'new' ? submoduleText(line) : ''}
+                  <div className="overflow-hidden whitespace-pre px-1">{content}</div>
+                  <div className="text-right text-muted/60 select-none pr-1">
+                    {line.newLine ?? ''}
                   </div>
+                  <div className="overflow-hidden whitespace-pre px-1">{content}</div>
                 </div>
               )
-            }
-            if (line.type === 'add') {
-              return (
-                <div key={line.id} className="contents">
-                  <div className="bg-rose-500/5" />
-                  <div className="bg-rose-500/5" />
-                  <div className="text-right text-emerald-400/60 select-none pr-1">{line.newLine ?? ''}</div>
-                  <div className="overflow-hidden whitespace-pre bg-emerald-500/10 px-1 text-emerald-400">
-                    {content}
-                  </div>
-                </div>
-              )
-            }
-            if (line.type === 'del') {
-              return (
-                <div key={line.id} className="contents">
-                  <div className="text-right text-rose-400/60 select-none pr-1">{line.oldLine ?? ''}</div>
-                  <div className="overflow-hidden whitespace-pre bg-rose-500/10 px-1 text-rose-400">
-                    {content}
-                  </div>
-                  <div className="bg-emerald-500/5" />
-                  <div className="bg-emerald-500/5" />
-                </div>
-              )
-            }
-            return (
-              <div key={line.id} className="contents">
-                <div className="text-right text-muted/60 select-none pr-1">{line.oldLine ?? ''}</div>
-                <div className="overflow-hidden whitespace-pre px-1">{content}</div>
-                <div className="text-right text-muted/60 select-none pr-1">{line.newLine ?? ''}</div>
-                <div className="overflow-hidden whitespace-pre px-1">{content}</div>
-              </div>
-            )
-          })}
-        </div>
-      )) : null}
+            })}
+          </div>
+        )
+      ) : null}
     </div>
   )
 }

@@ -31,8 +31,7 @@ type ProviderState = {
 }
 
 type ProviderAction =
-  | { type: 'set'; partial: Partial<ProviderState> }
-  | { type: 'load'; provider?: ProviderConfig }
+  { type: 'set'; partial: Partial<ProviderState> } | { type: 'load'; provider?: ProviderConfig }
 
 function initialProviderState(provider?: ProviderConfig): ProviderState {
   return {
@@ -230,13 +229,13 @@ export function ProjectConfigModal({ repository, onClose, onSave }: ProjectConfi
   const handleSave = () => {
     const providerConfig: ProviderConfig | undefined = provider.type
       ? {
-        type: provider.type,
-        organization: provider.organization || undefined,
-        project: provider.project || undefined,
-        repository: provider.repoName || repository.name,
-        personalAccessToken: provider.token || undefined,
-        source: currentSource,
-      }
+          type: provider.type,
+          organization: provider.organization || undefined,
+          project: provider.project || undefined,
+          repository: provider.repoName || repository.name,
+          personalAccessToken: provider.token || undefined,
+          source: currentSource,
+        }
       : undefined
 
     const timeoutSeconds = Number(preDeleteTimeout)
@@ -437,9 +436,8 @@ function GeneralSection({
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>
               The repository’s default branch is{' '}
-              <span className="font-medium">{defaultBranch}</span>. Merge, ahead/behind, and
-              “safe to delete” checks will use{' '}
-              <span className="font-medium">{baseBranch}</span> instead.
+              <span className="font-medium">{defaultBranch}</span>. Merge, ahead/behind, and “safe
+              to delete” checks will use <span className="font-medium">{baseBranch}</span> instead.
             </span>
           </p>
         ) : (
@@ -703,8 +701,7 @@ function ActionRow({
               onChange={(e) => {
                 const seconds = Number(e.target.value)
                 onChange({
-                  timeoutSeconds:
-                    Number.isFinite(seconds) && seconds > 0 ? seconds : undefined,
+                  timeoutSeconds: Number.isFinite(seconds) && seconds > 0 ? seconds : undefined,
                 })
               }}
               placeholder="600"
@@ -830,14 +827,9 @@ function ProviderSection({
   return (
     <section className="space-y-3">
       <div className="flex items-center justify-between">
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted">
-          Pull requests
-        </h3>
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted">Pull requests</h3>
         {repository.remoteUrl && (
-          <span
-            className="truncate font-mono text-[10px] text-muted"
-            title={repository.remoteUrl}
-          >
+          <span className="truncate font-mono text-[10px] text-muted" title={repository.remoteUrl}>
             {shortenPath(repository.remoteUrl)}
           </span>
         )}
@@ -857,7 +849,9 @@ function ProviderSection({
         <select
           id="provider-type"
           value={provider.type}
-          onChange={(e) => setProviderField({ type: e.target.value as ProviderConfig['type'] | '' })}
+          onChange={(e) =>
+            setProviderField({ type: e.target.value as ProviderConfig['type'] | '' })
+          }
           className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
         >
           <option value="">None</option>
@@ -909,8 +903,8 @@ function ProviderSection({
       {provider.type === 'azure' && (
         <div className="grid gap-3">
           <p className="text-xs text-muted">
-            Org, project, and repo are filled from <code className="text-[11px]">origin</code>{' '}
-            when possible — you usually only need a PAT.
+            Org, project, and repo are filled from <code className="text-[11px]">origin</code> when
+            possible — you usually only need a PAT.
           </p>
           <div className="grid grid-cols-2 gap-2">
             <div>

@@ -90,7 +90,7 @@ export default function App() {
             .find((r) => r.favorite)
           const selectedRepo = validLast
             ? repositories.find((r) => r.id === last)!
-            : firstFavorite ?? repositories[0]!
+            : (firstFavorite ?? repositories[0]!)
           setSelectedRepositoryId(selectedRepo.id)
           setView('dashboard')
         } else {

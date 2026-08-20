@@ -76,8 +76,11 @@ export function EditorPicker({
     }
   }, [open])
 
-  const selectedOption = useMemo(() => options.find((option) => option.id === value), [options, value])
-  const selectedLabel = value ? selectedOption?.label ?? value : defaultOptionLabel
+  const selectedOption = useMemo(
+    () => options.find((option) => option.id === value),
+    [options, value]
+  )
+  const selectedLabel = value ? (selectedOption?.label ?? value) : defaultOptionLabel
   const selectedEditorId = value || defaultEditorId
 
   return (
@@ -90,7 +93,9 @@ export function EditorPicker({
       >
         <EditorIcon editorId={selectedEditorId} editorIcons={editorIcons} className="h-3.5 w-3.5" />
         <span className="truncate">{selectedLabel}</span>
-        <ChevronDown className={cn('h-3.5 w-3.5 text-muted transition-transform', open && 'rotate-180')} />
+        <ChevronDown
+          className={cn('h-3.5 w-3.5 text-muted transition-transform', open && 'rotate-180')}
+        />
       </button>
 
       {open && (
@@ -106,7 +111,11 @@ export function EditorPicker({
               !value && 'bg-accent'
             )}
           >
-            <EditorIcon editorId={defaultEditorId} editorIcons={editorIcons} className="h-3.5 w-3.5" />
+            <EditorIcon
+              editorId={defaultEditorId}
+              editorIcons={editorIcons}
+              className="h-3.5 w-3.5"
+            />
             <span className="truncate">{defaultOptionLabel}</span>
             {!value && <Check className="ml-auto h-3.5 w-3.5 text-primary" />}
           </button>
@@ -129,7 +138,11 @@ export function EditorPicker({
                     selected && 'bg-accent'
                   )}
                 >
-                  <EditorIcon editorId={option.id} editorIcons={editorIcons} className="h-3.5 w-3.5" />
+                  <EditorIcon
+                    editorId={option.id}
+                    editorIcons={editorIcons}
+                    className="h-3.5 w-3.5"
+                  />
                   <span className="truncate">{option.label}</span>
                   {selected && <Check className="ml-auto h-3.5 w-3.5 text-primary" />}
                 </button>

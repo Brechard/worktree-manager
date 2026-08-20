@@ -112,9 +112,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }),
   updateRepository: (repository) =>
     set({
-      repositories: get().repositories.map((r) =>
-        r.id === repository.id ? repository : r
-      ),
+      repositories: get().repositories.map((r) => (r.id === repository.id ? repository : r)),
     }),
   setScanProgress: (scanProgress) => set({ scanProgress }),
   setSelectedRepositoryId: (selectedRepositoryId) => set({ selectedRepositoryId }),

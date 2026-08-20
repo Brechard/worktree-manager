@@ -15,7 +15,7 @@ stripped: prefix commands with `env -u ELECTRON_RUN_AS_NODE`.
 - Package macOS release (arm64 only): `cd apps/desktop && npm run dist`
 - Dev (hot-reload renderer + main): `cd apps/desktop && env -u ELECTRON_RUN_AS_NODE npx electron-vite dev`
 - Run the built app: `cd apps/desktop && env -u ELECTRON_RUN_AS_NODE node_modules/electron/dist/Electron.app/Contents/MacOS/Electron dist-electron/main/index.cjs`
-- Launch the *installed* app the same way — `open -a "Worktree Manager"` forwards
+- Launch the _installed_ app the same way — `open -a "Worktree Manager"` forwards
   `ELECTRON_RUN_AS_NODE` too, so it exits silently unless you use
   `env -u ELECTRON_RUN_AS_NODE open -a "Worktree Manager"`.
 - Verify against a throwaway profile instead of the user's: add

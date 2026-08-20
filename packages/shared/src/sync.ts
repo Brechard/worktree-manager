@@ -348,7 +348,10 @@ export async function syncWithBase(options: SyncWithBaseOptions): Promise<SyncBa
     if (conflictedFiles.length > 0) {
       lines.push(
         `${mode === 'rebase' ? 'Rebase onto' : 'Merge from'} ${baseRef} hit conflicts in ${conflictedFiles.length} file(s)${untouched}.`,
-        conflictedFiles.slice(0, 10).map((file) => `  • ${file}`).join('\n')
+        conflictedFiles
+          .slice(0, 10)
+          .map((file) => `  • ${file}`)
+          .join('\n')
       )
       if (conflictedFiles.length > 10) lines.push(`  …and ${conflictedFiles.length - 10} more`)
       lines.push(advice)
@@ -393,7 +396,12 @@ export async function syncWithBase(options: SyncWithBaseOptions): Promise<SyncBa
       'Nothing is lost: they are both in the working tree (with conflict markers) and on the stash. Resolve the markers and run `git stash drop`, or run `git reset --hard` then `git stash pop` to start the restore over.',
     ]
     if (conflictedFiles.length > 0) {
-      lines.push(conflictedFiles.slice(0, 10).map((file) => `  • ${file}`).join('\n'))
+      lines.push(
+        conflictedFiles
+          .slice(0, 10)
+          .map((file) => `  • ${file}`)
+          .join('\n')
+      )
     }
     if (recovery) lines.push(recovery)
     return {

@@ -214,7 +214,11 @@ export async function detectProjectImage(repoPath: string): Promise<string | und
     }
 
     let bestFile: string | undefined
-    let best = { dirIdx: Number.POSITIVE_INFINITY, nameIdx: Number.POSITIVE_INFINITY, extIdx: Number.POSITIVE_INFINITY }
+    let best = {
+      dirIdx: Number.POSITIVE_INFINITY,
+      nameIdx: Number.POSITIVE_INFINITY,
+      extIdx: Number.POSITIVE_INFINITY,
+    }
 
     for (const e of entries) {
       if (!e.isFile() && !e.isSymbolicLink()) continue
@@ -223,7 +227,9 @@ export async function detectProjectImage(repoPath: string): Promise<string | und
       if (
         priority.dirIdx < best.dirIdx ||
         (priority.dirIdx === best.dirIdx && priority.nameIdx < best.nameIdx) ||
-        (priority.dirIdx === best.dirIdx && priority.nameIdx === best.nameIdx && priority.extIdx < best.extIdx)
+        (priority.dirIdx === best.dirIdx &&
+          priority.nameIdx === best.nameIdx &&
+          priority.extIdx < best.extIdx)
       ) {
         best = priority
         bestFile = e.name

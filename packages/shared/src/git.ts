@@ -349,7 +349,8 @@ export async function resolveBaseRef(cwd: string, baseBranch: string): Promise<s
   if (await refExists(cwd, `refs/heads/${base}`)) return `refs/heads/${base}`
   const fallback = await getDefaultBranch(cwd)
   if (!fallback) return undefined
-  if (await refExists(cwd, `refs/remotes/origin/${fallback}`)) return `refs/remotes/origin/${fallback}`
+  if (await refExists(cwd, `refs/remotes/origin/${fallback}`))
+    return `refs/remotes/origin/${fallback}`
   if (await refExists(cwd, `refs/heads/${fallback}`)) return `refs/heads/${fallback}`
   return undefined
 }

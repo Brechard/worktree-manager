@@ -210,7 +210,12 @@ export function CleanupCandidatesModal({
                 )}
                 <button
                   type="button"
-                  onClick={() => onConfirm(selected.map((c) => c.worktree), permanent)}
+                  onClick={() =>
+                    onConfirm(
+                      selected.map((c) => c.worktree),
+                      permanent
+                    )
+                  }
                   disabled={selected.length === 0}
                   className="inline-flex items-center gap-1.5 rounded-md bg-destructive px-3 py-1.5 text-sm font-medium text-destructive-foreground disabled:cursor-default disabled:opacity-50"
                 >

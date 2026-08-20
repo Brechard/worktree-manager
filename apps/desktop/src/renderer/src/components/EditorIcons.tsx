@@ -290,32 +290,74 @@ function JetBrainsBox({
   return (
     <svg {...props} viewBox="0 0 64 64" className={cn('text-white', className)}>
       <defs>
-        <linearGradient id="jb-a" x1="59.676" x2="1.08" y1="4.067" y2="62.663" gradientUnits="userSpaceOnUse">
+        <linearGradient
+          id="jb-a"
+          x1="59.676"
+          x2="1.08"
+          y1="4.067"
+          y2="62.663"
+          gradientUnits="userSpaceOnUse"
+        >
           <stop offset=".25" stopColor={primary} />
           <stop offset=".75" stopColor={secondary} />
         </linearGradient>
       </defs>
-      <path fill="url(#jb-a)" d="M4.125 64h34.128a4.13 4.13 0 0 0 3.8-2.52L57.85 24.057c.219-.518.33-1.076.324-1.638l-.15-18.329A4.124 4.124 0 0 0 53.9 0H36.234c-.806 0-1.593.236-2.267.678L1.86 21.787A4.13 4.13 0 0 0 0 25.234v34.641A4.125 4.125 0 0 0 4.125 64" />
+      <path
+        fill="url(#jb-a)"
+        d="M4.125 64h34.128a4.13 4.13 0 0 0 3.8-2.52L57.85 24.057c.219-.518.33-1.076.324-1.638l-.15-18.329A4.124 4.124 0 0 0 53.9 0H36.234c-.806 0-1.593.236-2.267.678L1.86 21.787A4.13 4.13 0 0 0 0 25.234v34.641A4.125 4.125 0 0 0 4.125 64"
+      />
       <path fill="#000" d="M52 12H12v40h40z" />
-      <text x="32" y="42" textAnchor="middle" fill="#fff" fontSize="22" fontFamily="system-ui, sans-serif" fontWeight="700">
+      <text
+        x="32"
+        y="42"
+        textAnchor="middle"
+        fill="#fff"
+        fontSize="22"
+        fontFamily="system-ui, sans-serif"
+        fontWeight="700"
+      >
         {letter}
       </text>
     </svg>
   )
 }
 
-export const AquaIcon: Icon = (props) => <JetBrainsBox primary="#7256FF" secondary="#007DFE" letter="A" {...props} />
-export const CLionIcon: Icon = (props) => <JetBrainsBox primary="#009AE5" secondary="#00D980" letter="C" {...props} />
-export const DataGripIcon: Icon = (props) => <JetBrainsBox primary="#7256FF" secondary="#00D980" letter="D" {...props} />
-export const DataSpellIcon: Icon = (props) => <JetBrainsBox primary="#007DFE" secondary="#00D980" letter="DS" {...props} />
-export const GoLandIcon: Icon = (props) => <JetBrainsBox primary="#00D886" secondary="#007DFE" letter="G" {...props} />
-export const IntelliJIdeaIcon: Icon = (props) => <JetBrainsBox primary="#FC801D" secondary="#FE2857" letter="I" {...props} />
-export const PhpStormIcon: Icon = (props) => <JetBrainsBox primary="#D249FC" secondary="#FF2D90" letter="P" {...props} />
-export const PyCharmIcon: Icon = (props) => <JetBrainsBox primary="#F0EB18" secondary="#00C4F4" letter="P" {...props} />
-export const RiderIcon: Icon = (props) => <JetBrainsBox primary="#007DFE" secondary="#FFB700" letter="R" {...props} />
-export const RubyMineIcon: Icon = (props) => <JetBrainsBox primary="#FF2358" secondary="#7256FF" letter="R" {...props} />
-export const RustRoverIcon: Icon = (props) => <JetBrainsBox primary="#00D886" secondary="#FF004C" letter="R" {...props} />
-export const WebStormIcon: Icon = (props) => <JetBrainsBox primary="#00C4F4" secondary="#007DFE" letter="W" {...props} />
+export const AquaIcon: Icon = (props) => (
+  <JetBrainsBox primary="#7256FF" secondary="#007DFE" letter="A" {...props} />
+)
+export const CLionIcon: Icon = (props) => (
+  <JetBrainsBox primary="#009AE5" secondary="#00D980" letter="C" {...props} />
+)
+export const DataGripIcon: Icon = (props) => (
+  <JetBrainsBox primary="#7256FF" secondary="#00D980" letter="D" {...props} />
+)
+export const DataSpellIcon: Icon = (props) => (
+  <JetBrainsBox primary="#007DFE" secondary="#00D980" letter="DS" {...props} />
+)
+export const GoLandIcon: Icon = (props) => (
+  <JetBrainsBox primary="#00D886" secondary="#007DFE" letter="G" {...props} />
+)
+export const IntelliJIdeaIcon: Icon = (props) => (
+  <JetBrainsBox primary="#FC801D" secondary="#FE2857" letter="I" {...props} />
+)
+export const PhpStormIcon: Icon = (props) => (
+  <JetBrainsBox primary="#D249FC" secondary="#FF2D90" letter="P" {...props} />
+)
+export const PyCharmIcon: Icon = (props) => (
+  <JetBrainsBox primary="#F0EB18" secondary="#00C4F4" letter="P" {...props} />
+)
+export const RiderIcon: Icon = (props) => (
+  <JetBrainsBox primary="#007DFE" secondary="#FFB700" letter="R" {...props} />
+)
+export const RubyMineIcon: Icon = (props) => (
+  <JetBrainsBox primary="#FF2358" secondary="#7256FF" letter="R" {...props} />
+)
+export const RustRoverIcon: Icon = (props) => (
+  <JetBrainsBox primary="#00D886" secondary="#FF004C" letter="R" {...props} />
+)
+export const WebStormIcon: Icon = (props) => (
+  <JetBrainsBox primary="#00C4F4" secondary="#007DFE" letter="W" {...props} />
+)
 
 function PlaceholderIcon({
   bg,
@@ -326,7 +368,15 @@ function PlaceholderIcon({
   return (
     <svg {...props} viewBox="0 0 64 64" className={cn('text-white', className)}>
       <rect width="64" height="64" rx="14" fill={bg} />
-      <text x="32" y="43" textAnchor="middle" fill="#fff" fontSize="26" fontFamily="system-ui, sans-serif" fontWeight="700">
+      <text
+        x="32"
+        y="43"
+        textAnchor="middle"
+        fill="#fff"
+        fontSize="26"
+        fontFamily="system-ui, sans-serif"
+        fontWeight="700"
+      >
         {letter}
       </text>
     </svg>
@@ -334,12 +384,20 @@ function PlaceholderIcon({
 }
 
 export const WindsurfIcon: Icon = (props) => <PlaceholderIcon bg="#0E8CFF" letter="W" {...props} />
-export const AntigravityIcon: Icon = (props) => <PlaceholderIcon bg="#FF5A1F" letter="A" {...props} />
+export const AntigravityIcon: Icon = (props) => (
+  <PlaceholderIcon bg="#FF5A1F" letter="A" {...props} />
+)
 export const DevinIcon: Icon = (props) => <PlaceholderIcon bg="#6B21A8" letter="D" {...props} />
-export const AndroidStudioIcon: Icon = (props) => <PlaceholderIcon bg="#3DDC84" letter="A" {...props} />
+export const AndroidStudioIcon: Icon = (props) => (
+  <PlaceholderIcon bg="#3DDC84" letter="A" {...props} />
+)
 export const XcodeIcon: Icon = (props) => <PlaceholderIcon bg="#147EFB" letter="X" {...props} />
-export const SublimeTextIcon: Icon = (props) => <PlaceholderIcon bg="#FF9800" letter="S" {...props} />
-export const FileManagerIcon: Icon = (props) => <PlaceholderIcon bg="#6B7280" letter="F" {...props} />
+export const SublimeTextIcon: Icon = (props) => (
+  <PlaceholderIcon bg="#FF9800" letter="S" {...props} />
+)
+export const FileManagerIcon: Icon = (props) => (
+  <PlaceholderIcon bg="#6B7280" letter="F" {...props} />
+)
 
 const EDITOR_ICON_BY_ID: Record<string, Icon> = {
   cursor: CursorIcon,

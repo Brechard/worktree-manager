@@ -32,7 +32,7 @@ function useSettings() {
     api
       .getAppVersion()
       .then(setVersion)
-      .catch(() => { })
+      .catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -306,8 +306,8 @@ function ProviderTokensSection({
         Provider tokens
       </h2>
       <p className="mb-3 text-xs text-muted">
-        Used for PR lookup when a project has no token. GitHub/Azure org+repo are auto-detected
-        from git remotes.
+        Used for PR lookup when a project has no token. GitHub/Azure org+repo are auto-detected from
+        git remotes.
       </p>
       {tokenMsg && <p className="mb-2 text-xs text-muted">{tokenMsg}</p>}
       <div className="space-y-3">

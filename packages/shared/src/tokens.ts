@@ -25,7 +25,12 @@ export async function detectProviderToken(
   }
 
   if (provider === 'azure') {
-    for (const key of ['AZURE_DEVOPS_EXT_PAT', 'AZURE_DEVOPS_PAT', 'ADO_PAT', 'SYSTEM_ACCESSTOKEN']) {
+    for (const key of [
+      'AZURE_DEVOPS_EXT_PAT',
+      'AZURE_DEVOPS_PAT',
+      'ADO_PAT',
+      'SYSTEM_ACCESSTOKEN',
+    ]) {
       const v = process.env[key]
       if (v && v.length > 8) {
         return { provider: 'azure', token: v, source: `env:${key}` }
@@ -35,7 +40,16 @@ export async function detectProviderToken(
     try {
       const { stdout, exitCode } = await runCommand(
         'az',
-        ['account', 'get-access-token', '--resource', '499b84ac-1321-427f-aa17-267ca6975798', '--query', 'accessToken', '-o', 'tsv'],
+        [
+          'account',
+          'get-access-token',
+          '--resource',
+          '499b84ac-1321-427f-aa17-267ca6975798',
+          '--query',
+          'accessToken',
+          '-o',
+          'tsv',
+        ],
         { timeout: 12000 }
       )
       if (exitCode === 0 && stdout.trim().length > 8) {

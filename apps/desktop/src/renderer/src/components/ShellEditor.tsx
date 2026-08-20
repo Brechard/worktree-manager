@@ -10,20 +10,90 @@ import { cn } from '../lib/utils'
  */
 
 const KEYWORDS = new Set([
-  'if', 'then', 'else', 'elif', 'fi', 'for', 'while', 'until', 'do', 'done',
-  'case', 'esac', 'in', 'function', 'select', 'time',
-  'return', 'exit', 'break', 'continue',
-  'local', 'export', 'unset', 'set', 'declare', 'readonly', 'shift',
+  'if',
+  'then',
+  'else',
+  'elif',
+  'fi',
+  'for',
+  'while',
+  'until',
+  'do',
+  'done',
+  'case',
+  'esac',
+  'in',
+  'function',
+  'select',
+  'time',
+  'return',
+  'exit',
+  'break',
+  'continue',
+  'local',
+  'export',
+  'unset',
+  'set',
+  'declare',
+  'readonly',
+  'shift',
 ])
 
 /** Commands worth colouring as commands. Anything else stays plain. */
 const COMMANDS = new Set([
-  'echo', 'printf', 'cd', 'pwd', 'read', 'test', 'eval', 'exec', 'source', 'trap',
-  'sed', 'awk', 'grep', 'egrep', 'head', 'tail', 'cut', 'tr', 'sort', 'uniq', 'wc',
-  'xargs', 'find', 'basename', 'dirname', 'realpath', 'tee', 'cat',
-  'docker', 'docker-compose', 'git', 'npm', 'pnpm', 'yarn', 'bun', 'node', 'python3',
-  'rm', 'mv', 'cp', 'ls', 'mkdir', 'rmdir', 'touch', 'chmod', 'ln',
-  'sleep', 'kill', 'pkill', 'true', 'false', 'command', 'which',
+  'echo',
+  'printf',
+  'cd',
+  'pwd',
+  'read',
+  'test',
+  'eval',
+  'exec',
+  'source',
+  'trap',
+  'sed',
+  'awk',
+  'grep',
+  'egrep',
+  'head',
+  'tail',
+  'cut',
+  'tr',
+  'sort',
+  'uniq',
+  'wc',
+  'xargs',
+  'find',
+  'basename',
+  'dirname',
+  'realpath',
+  'tee',
+  'cat',
+  'docker',
+  'docker-compose',
+  'git',
+  'npm',
+  'pnpm',
+  'yarn',
+  'bun',
+  'node',
+  'python3',
+  'rm',
+  'mv',
+  'cp',
+  'ls',
+  'mkdir',
+  'rmdir',
+  'touch',
+  'chmod',
+  'ln',
+  'sleep',
+  'kill',
+  'pkill',
+  'true',
+  'false',
+  'command',
+  'which',
 ])
 
 const CLASS = {
@@ -230,7 +300,11 @@ export function ShellEditor({ id, value, onChange, placeholder, className }: She
         className
       )}
     >
-      <pre ref={preRef} aria-hidden="true" className={cn('absolute inset-0 overflow-hidden', shared)}>
+      <pre
+        ref={preRef}
+        aria-hidden="true"
+        className={cn('absolute inset-0 overflow-hidden', shared)}
+      >
         {value ? highlight(value) : <span className="text-muted">{placeholder}</span>}
       </pre>
       <textarea

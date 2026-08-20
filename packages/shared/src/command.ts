@@ -96,7 +96,10 @@ export async function runShellCommand(
         env: { ...process.env, ...options.env },
       },
       (error, stdout, stderr) => {
-        const output = [stdout, stderr].map((s) => (s ?? '').trim()).filter(Boolean).join('\n')
+        const output = [stdout, stderr]
+          .map((s) => (s ?? '').trim())
+          .filter(Boolean)
+          .join('\n')
         if (!error) {
           settle({ success: true, output, exitCode: 0 })
           return
@@ -266,7 +269,10 @@ export async function runProjectCommand(options: {
     ? options.context.worktreePath
     : options.context.repoPath
   if (!existsSync(root)) {
-    return { success: false, output: `Neither the worktree nor ${options.context.repoPath} exists.` }
+    return {
+      success: false,
+      output: `Neither the worktree nor ${options.context.repoPath} exists.`,
+    }
   }
 
   const cwd = resolveWorkingDirectory(root, options.subdirectory)

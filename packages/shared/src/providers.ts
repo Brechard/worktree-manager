@@ -73,7 +73,9 @@ async function lookupGitHubPullRequest(
     data.find((candidate) => candidate.state === 'open') ??
     data.find(
       (candidate) =>
-        candidate.state === 'closed' && candidate.merged === true && candidate.base?.ref === baseBranch
+        candidate.state === 'closed' &&
+        candidate.merged === true &&
+        candidate.base?.ref === baseBranch
     ) ??
     data[0]
   if (!pr) return undefined

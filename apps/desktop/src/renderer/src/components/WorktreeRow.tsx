@@ -90,7 +90,23 @@ const gitActions = new Set([
 ])
 
 export function WorktreeRow(props: WorktreeRowProps) {
-  const { worktree, repository, status, refreshing, cleaning, diskUsage, measuring, onReclaim, editorId, catchUp, onDelete, onActionError, onRefresh, onRefreshWorktree, onBranchChange } = props
+  const {
+    worktree,
+    repository,
+    status,
+    refreshing,
+    cleaning,
+    diskUsage,
+    measuring,
+    onReclaim,
+    editorId,
+    catchUp,
+    onDelete,
+    onActionError,
+    onRefresh,
+    onRefreshWorktree,
+    onBranchChange,
+  } = props
 
   const [busy, setBusy] = useState<BusyKind | null>(null)
   const [expanded, setExpanded] = useState(false)
@@ -179,9 +195,7 @@ export function WorktreeRow(props: WorktreeRowProps) {
     run('terminal', () =>
       window.api.openInTerminal({
         path: worktree.path,
-        ...(repository.workingSubdirectory
-          ? { subdirectory: repository.workingSubdirectory }
-          : {}),
+        ...(repository.workingSubdirectory ? { subdirectory: repository.workingSubdirectory } : {}),
       })
     )
 

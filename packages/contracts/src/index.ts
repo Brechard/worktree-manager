@@ -137,10 +137,7 @@ export type PullRequest = z.infer<typeof pullRequestSchema>
  * style PR once shipped from it — and then pins that stale badge to the row
  * forever. Shared so the main-process lookup and the renderer's badge agree.
  */
-export function branchCanHavePullRequest(
-  branch: string | undefined,
-  baseBranch: string
-): boolean {
+export function branchCanHavePullRequest(branch: string | undefined, baseBranch: string): boolean {
   if (!branch || branch === 'HEAD') return false
   return branch !== baseBranch
 }
@@ -240,11 +237,7 @@ export const appSettingsSchema = z.object({
   watchedDirectories: z.array(z.string()).default([]),
   excludedPaths: z
     .array(z.string())
-    .default([
-      '~/.claude/plugins/cache',
-      '~/.codex/plugins/cache',
-      '~/.devin/plugins/cache',
-    ]),
+    .default(['~/.claude/plugins/cache', '~/.codex/plugins/cache', '~/.devin/plugins/cache']),
   defaultEditor: z.string().default('cursor'),
   defaultTerminal: z.string().optional(),
   theme: z.enum(['system', 'light', 'dark']).default('system'),

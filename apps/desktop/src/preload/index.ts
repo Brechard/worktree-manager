@@ -223,10 +223,8 @@ const api = {
   onStatusProgress: (
     callback: (progress: { scopeId?: string; current: number; total: number }) => void
   ): (() => void) => {
-    const listener = (
-      _: unknown,
-      progress: { scopeId?: string; current: number; total: number }
-    ) => callback(progress)
+    const listener = (_: unknown, progress: { scopeId?: string; current: number; total: number }) =>
+      callback(progress)
     ipcRenderer.on('status-progress', listener)
     return () => ipcRenderer.removeListener('status-progress', listener)
   },
@@ -234,10 +232,8 @@ const api = {
   onBaseStatusProgress: (
     callback: (progress: { scopeId?: string; current: number; total: number }) => void
   ): (() => void) => {
-    const listener = (
-      _: unknown,
-      progress: { scopeId?: string; current: number; total: number }
-    ) => callback(progress)
+    const listener = (_: unknown, progress: { scopeId?: string; current: number; total: number }) =>
+      callback(progress)
     ipcRenderer.on('base-status-progress', listener)
     return () => ipcRenderer.removeListener('base-status-progress', listener)
   },

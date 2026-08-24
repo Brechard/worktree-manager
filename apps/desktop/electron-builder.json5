@@ -11,22 +11,13 @@
     icon: 'resources/icon.icns',
     artifactName: '${productName}-${version}-${arch}.${ext}',
     category: 'public.app-category.developer-tools',
-    target: [
-      { target: 'dmg', arch: ['arm64'] },
-      { target: 'zip', arch: ['arm64'] },
-    ],
+    target: ['dmg', 'zip'],
   },
   win: {
-    target: [
-      { target: 'nsis', arch: ['x64', 'arm64'] },
-      { target: 'zip', arch: ['x64', 'arm64'] },
-    ],
+    target: ['nsis', 'zip'],
   },
   linux: {
     category: 'Development',
-    target: [
-      { target: 'AppImage', arch: ['x64', 'arm64'] },
-      { target: 'zip', arch: ['x64', 'arm64'] },
-    ],
+    target: ['AppImage', 'zip'],
   },
 }

@@ -10,12 +10,10 @@ See every worktree across every repo on your machine, know at a glance which one
 safe to delete, and reclaim the gigabytes of `node_modules` they're quietly hoarding.
 
 [![CI](https://github.com/Brechard/worktree-manager/actions/workflows/ci.yml/badge.svg)](https://github.com/Brechard/worktree-manager/actions/workflows/ci.yml)
-[![Latest release](https://img.shields.io/github/v/release/Brechard/worktree-manager?include_prereleases&sort=semver)](https://github.com/Brechard/worktree-manager/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/Brechard/worktree-manager/total)](https://github.com/Brechard/worktree-manager/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)](https://github.com/Brechard/worktree-manager/releases/latest)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)](#install)
 
-[**Download**](https://github.com/Brechard/worktree-manager/releases/latest) ·
+[**Install**](#install) ·
 [Features](#features) ·
 [Why](#why-this-exists) ·
 [Build from source](#build-from-source)
@@ -101,33 +99,31 @@ terminal or a file manager at the worktree path.
 
 ## Install
 
-### Download
+No prebuilt binaries are published. The project has no code-signing certificate yet, so
+downloaded builds get flagged as **damaged** by Gatekeeper on macOS (and warned about by
+SmartScreen on Windows) — more trouble than they're worth. Building on your own machine
+produces the same app with no quarantine flag and no warnings.
 
-Grab the latest build for your platform from the
-[**releases page**](https://github.com/Brechard/worktree-manager/releases/latest).
+### One command
 
-| Platform              | File                                        |
-| --------------------- | ------------------------------------------- |
-| macOS (Apple Silicon) | `Worktree.Manager-<version>-arm64.dmg`      |
-| Windows               | `Worktree.Manager.Setup.<version>.exe`      |
-| Linux (x64)           | `Worktree.Manager-<version>.AppImage`       |
-| Linux (arm64)         | `Worktree.Manager-<version>-arm64.AppImage` |
-
-Intel Macs are not built right now — the macOS target is arm64 only. Build from source
-if you're on one.
-
-**macOS:** the builds are not code-signed yet, so Gatekeeper will refuse the first launch.
-Clear the quarantine flag once after moving the app to `/Applications`:
+Requires [Bun](https://bun.sh) 1.3+, Node 22+ and git (Git Bash on Windows):
 
 ```bash
-xattr -dr com.apple.quarantine "/Applications/Worktree Manager.app"
+git clone https://github.com/Brechard/worktree-manager.git
+cd worktree-manager && ./scripts/install-local.sh
 ```
 
-**Linux:** make the AppImage executable before running it.
+The script detects your OS and CPU architecture, installs dependencies, builds the
+matching installer, and on macOS moves the app into `/Applications` and launches it.
+Pass `--no-install` if you only want the artifact.
 
-```bash
-chmod +x Worktree.Manager-*.AppImage
-```
+Artifacts land in `apps/desktop/release/`:
+
+| Platform | Artifact                                       |
+| -------- | ---------------------------------------------- |
+| macOS    | `Worktree Manager-<version>-<arch>.dmg`        |
+| Windows  | `Worktree Manager Setup <version>.exe`         |
+| Linux    | `Worktree.Manager-<version>-<arch>.AppImage`   |
 
 ### Build from source
 
@@ -141,10 +137,16 @@ git clone https://github.com/Brechard/worktree-manager.git
 cd worktree-manager && bun install && bun dev
 ```
 
-To produce an installer for your own platform:
+To produce an installer for your own platform manually:
 
 ```bash
 bun run dist
+```
+
+or, for a specific target:
+
+```bash
+cd apps/desktop && npx electron-builder --mac # or --win, --linux
 ```
 
 ## How it works

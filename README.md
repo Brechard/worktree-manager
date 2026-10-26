@@ -16,6 +16,10 @@ space when work is done.
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)](#install)
 
+[**Download for Mac (Apple silicon)**](https://github.com/Brechard/worktree-manager/releases/download/v0.2.0/Worktree-Manager-0.2.0-macos-arm64.dmg) ·
+[Mac (Intel)](https://github.com/Brechard/worktree-manager/releases/download/v0.2.0/Worktree-Manager-0.2.0-macos-x64.dmg) ·
+[Windows](https://github.com/Brechard/worktree-manager/releases/download/v0.2.0/Worktree-Manager-0.2.0-windows-x64.exe)
+
 [**Install**](#install) ·
 [Features](#features) ·
 [Why](#why-this-exists) ·
@@ -130,23 +134,22 @@ terminal or a file manager at the worktree path.
 
 ## Install
 
-Installers are listed on the [GitHub Releases page](https://github.com/Brechard/worktree-manager/releases)
-when a release is published. The older v0.1.0 release has no downloads; if the latest
-release also has no assets, [build from source](#build-from-source) for now. Git must be
-installed and available on your `PATH` to manage worktrees.
+Download **v0.2.0** from the links below or browse all files on the
+[GitHub Releases page](https://github.com/Brechard/worktree-manager/releases/latest).
+Git must be installed and available on your `PATH` to manage worktrees.
 
-| System                | Download                                        | Install                                                     |
-| --------------------- | ----------------------------------------------- | ----------------------------------------------------------- |
-| macOS (Apple silicon) | `Worktree-Manager-<version>-macos-arm64.dmg`    | Open the DMG and drag **Worktree Manager** to Applications. |
-| macOS (Intel)         | `Worktree-Manager-<version>-macos-x64.dmg`      | Open the DMG and drag **Worktree Manager** to Applications. |
-| Windows (x64)         | `Worktree-Manager-<version>-windows-x64.exe`    | Run the installer and follow its prompts.                   |
-| Linux (x64)           | `Worktree-Manager-<version>-linux-x64.AppImage` | Make the AppImage executable, then run it.                  |
+| System                | Download                                                                                                                    | Install                                                     |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| macOS (Apple silicon) | [DMG](https://github.com/Brechard/worktree-manager/releases/download/v0.2.0/Worktree-Manager-0.2.0-macos-arm64.dmg)         | Open the DMG and drag **Worktree Manager** to Applications. |
+| macOS (Intel)         | [DMG](https://github.com/Brechard/worktree-manager/releases/download/v0.2.0/Worktree-Manager-0.2.0-macos-x64.dmg)           | Open the DMG and drag **Worktree Manager** to Applications. |
+| Windows (x64)         | [Installer](https://github.com/Brechard/worktree-manager/releases/download/v0.2.0/Worktree-Manager-0.2.0-windows-x64.exe)   | Run the installer and follow its prompts.                   |
+| Linux (x64)           | [AppImage](https://github.com/Brechard/worktree-manager/releases/download/v0.2.0/Worktree-Manager-0.2.0-linux-x64.AppImage) | Make the AppImage executable, then run it.                  |
 
-Each platform also has a ZIP download. The Windows installer is unsigned until a separate
-Windows signing certificate or service is configured, so SmartScreen may show an
-**Unknown publisher** warning. macOS downloads should be signed with Developer ID and
-notarized before publication; if macOS blocks one, check the release status rather than
-disabling Gatekeeper.
+The macOS apps are signed with ClubTidy's **Developer ID** and notarized by Apple.
+The Windows installer is currently unsigned, so SmartScreen may show an
+**Unknown publisher** warning. Each platform also has a ZIP download, and the release
+includes `SHA256SUMS` for verifying downloads. No Bun or Node installation is needed to
+run a downloaded app.
 
 ### Build and install locally
 

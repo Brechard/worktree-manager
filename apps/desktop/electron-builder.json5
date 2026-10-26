@@ -13,15 +13,23 @@
   ],
   mac: {
     icon: 'resources/icon.icns',
-    artifactName: '${productName}-${version}-${arch}.${ext}',
+    artifactName: 'Worktree-Manager-${version}-macos-${arch}.${ext}',
     category: 'public.app-category.developer-tools',
+    hardenedRuntime: true,
+    notarize: true,
     target: ['dmg', 'zip'],
   },
   win: {
+    artifactName: 'Worktree-Manager-${version}-windows-${arch}.${ext}',
     target: ['nsis', 'zip'],
   },
+  nsis: {
+    artifactName: 'Worktree-Manager-${version}-windows-${arch}.${ext}',
+  },
   linux: {
+    artifactName: 'Worktree-Manager-${version}-linux-${arch}.${ext}',
     category: 'Development',
+    executableName: 'worktree-manager',
     target: ['AppImage', 'zip'],
   },
 }

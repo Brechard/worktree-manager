@@ -130,12 +130,25 @@ terminal or a file manager at the worktree path.
 
 ## Install
 
-No prebuilt binaries are published. The project has no code-signing certificate yet, so
-downloaded builds get flagged as **damaged** by Gatekeeper on macOS (and warned about by
-SmartScreen on Windows) — more trouble than they're worth. Building on your own machine
-produces the same app with no quarantine flag and no warnings.
+Installers are listed on the [GitHub Releases page](https://github.com/Brechard/worktree-manager/releases)
+when a release is published. The older v0.1.0 release has no downloads; if the latest
+release also has no assets, [build from source](#build-from-source) for now. Git must be
+installed and available on your `PATH` to manage worktrees.
 
-### One command
+| System                | Download                                        | Install                                                     |
+| --------------------- | ----------------------------------------------- | ----------------------------------------------------------- |
+| macOS (Apple silicon) | `Worktree-Manager-<version>-macos-arm64.dmg`    | Open the DMG and drag **Worktree Manager** to Applications. |
+| macOS (Intel)         | `Worktree-Manager-<version>-macos-x64.dmg`      | Open the DMG and drag **Worktree Manager** to Applications. |
+| Windows (x64)         | `Worktree-Manager-<version>-windows-x64.exe`    | Run the installer and follow its prompts.                   |
+| Linux (x64)           | `Worktree-Manager-<version>-linux-x64.AppImage` | Make the AppImage executable, then run it.                  |
+
+Each platform also has a ZIP download. The Windows installer is unsigned until a separate
+Windows signing certificate or service is configured, so SmartScreen may show an
+**Unknown publisher** warning. macOS downloads should be signed with Developer ID and
+notarized before publication; if macOS blocks one, check the release status rather than
+disabling Gatekeeper.
+
+### Build and install locally
 
 Requires [Bun](https://bun.sh) 1.4.4+, Node 22+ and git (Git Bash on Windows):
 
@@ -148,13 +161,7 @@ The script detects your OS and CPU architecture, installs dependencies, builds t
 matching installer, and on macOS moves the app into `/Applications` and launches it.
 Pass `--no-install` if you only want the artifact.
 
-Artifacts land in `apps/desktop/release/`:
-
-| Platform | Artifact                                     |
-| -------- | -------------------------------------------- |
-| macOS    | `Worktree Manager-<version>-<arch>.dmg`      |
-| Windows  | `Worktree Manager Setup <version>.exe`       |
-| Linux    | `Worktree.Manager-<version>-<arch>.AppImage` |
+Artifacts land in `apps/desktop/release/`.
 
 ### Build from source
 

@@ -236,6 +236,21 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Normalize Linux AppImage architecture name
+        if: matrix.os == 'linux' && matrix.arch == 'x64'
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          # AppImage maps electron-builder's x64 architecture to x86_64.
+          # Keep the public asset names consistent with the other packages.
+          version="${RELEASE_TAG#v}"
+          source="apps/desktop/release/Worktree-Manager-$version-linux-x86_64.AppImage"
+          target="apps/desktop/release/Worktree-Manager-$version-linux-x64.AppImage"
+          test -f "$source"
+          test ! -e "$target"
+          mv -- "$source" "$target"
+
       - name: Stage and validate release assets
         shell: bash
         env:

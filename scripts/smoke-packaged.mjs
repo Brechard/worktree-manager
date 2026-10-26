@@ -43,7 +43,26 @@ const remaining = () => Math.max(0, deadline - Date.now())
 let child
 let socket
 let childExit
+let childClose
 let output = ''
+
+function waitForClose(processToWaitFor, timeoutMs) {
+  return new Promise((resolve) => {
+    const finish = (closed) => {
+      clearTimeout(timer)
+      processToWaitFor.off('close', onClose)
+      processToWaitFor.off('error', onError)
+      resolve(closed)
+    }
+    const onClose = () => {
+      finish(true)
+    }
+    const onError = () => finish(true)
+    const timer = setTimeout(() => finish(false), timeoutMs)
+    processToWaitFor.once('close', onClose)
+    processToWaitFor.once('error', onError)
+  })
+}
 
 function listenPort() {
   return new Promise((resolvePort, reject) => {
@@ -125,11 +144,16 @@ function makeCdp(ws) {
 async function stopChild() {
   if (!child?.pid) return
   if (process.platform === 'win32') {
-    await new Promise((done) => {
-      const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' })
-      killer.once('error', done)
-      killer.once('exit', done)
-    })
+    // taskkill may return before Electron has released its profile handles.
+    const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' })
+    let killerClosed = await waitForClose(killer, 5_000)
+    if (!killerClosed) {
+      killer.kill()
+      killerClosed = await waitForClose(killer, 1_000)
+    }
+    const appClosed = childClose || (await waitForClose(child, 5_000))
+    if (!appClosed) throw new Error(`App process pid=${child.pid} did not close after taskkill`)
+    if (!killerClosed) throw new Error('taskkill did not close within the cleanup timeout')
   } else {
     // The child owns its process group; never signal another app or the caller.
     try {
@@ -166,6 +190,9 @@ try {
   })
   child.once('exit', (code, signal) => {
     childExit = { code, signal }
+  })
+  child.once('close', () => {
+    childClose = true
   })
   child.once('error', (error) => {
     childExit = { error: error.message }
@@ -258,6 +285,22 @@ try {
   process.exitCode = 1
 } finally {
   socket?.close()
-  await stopChild()
-  rmSync(profile, { recursive: true, force: true })
+  try {
+    await stopChild()
+  } catch (error) {
+    console.error(`FAIL packaged smoke cleanup: ${error.message}`)
+    process.exitCode = 1
+  }
+  try {
+    rmSync(profile, {
+      recursive: true,
+      force: true,
+      ...(process.platform === 'win32' ? { maxRetries: 8, retryDelay: 250 } : {}),
+    })
+  } catch (error) {
+    console.error(
+      `FAIL packaged smoke cleanup: could not remove temporary profile ${profile}: ${error.message}`
+    )
+    process.exitCode = 1
+  }
 }

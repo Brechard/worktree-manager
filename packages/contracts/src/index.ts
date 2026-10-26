@@ -70,6 +70,12 @@ export const repositorySchema = z.object({
   preDeleteCommand: z.string().optional(),
   /** Seconds the pre-delete command may run before it is killed. */
   preDeleteTimeoutSeconds: z.number().optional(),
+  /** Override the global destination for newly created worktrees. */
+  worktreeLocation: z.enum(['sibling', 'inside', 'managed', 'custom']).optional(),
+  worktreeCustomParent: z.string().optional(),
+  /** Explicitly configured setup command run in the new worktree root. */
+  postCreateCommand: z.string().optional(),
+  postCreateTimeoutSeconds: z.number().positive().optional(),
   /**
    * Where day-to-day work happens inside a worktree, relative to its root — the
    * `clubtidy/` of a repo whose app lives one level down. Terminals and custom
@@ -91,6 +97,41 @@ export const commandResultSchema = z.object({
 })
 export type CommandResult = z.infer<typeof commandResultSchema>
 
+export const worktreeLocationSchema = z.enum(['sibling', 'inside', 'managed', 'custom'])
+export type WorktreeLocation = z.infer<typeof worktreeLocationSchema>
+export const createWorktreeRequestSchema = z.object({
+  repositoryId: z.string().min(1),
+  branch: z.string().min(1),
+  mode: z.enum(['new', 'existing']),
+  startRef: z.string().optional(),
+  /** Reject if the previewed starting commit changed before Create was clicked. */
+  expectedSourceCommit: z.string().optional(),
+  location: worktreeLocationSchema.optional(),
+  customParent: z.string().optional(),
+})
+export type CreateWorktreeRequest = z.infer<typeof createWorktreeRequestSchema>
+export interface WorktreeCreationPreview {
+  path: string
+  branch: string
+  startRef: string
+  sourceCommit?: string
+  error?: string
+}
+export interface WorktreeCreationResult {
+  success: boolean
+  worktree?: Worktree
+  setup?: CommandResult
+  error?: string
+  warning?: string
+}
+export interface WorktreeCreationProgress {
+  repositoryId: string
+  stage: 'validating' | 'creating' | 'saving' | 'registered' | 'setup' | 'done'
+  message: string
+  output?: string
+  worktree?: Worktree
+}
+
 export const worktreeSortSchema = z.enum(['activity', 'name', 'safety'])
 export type WorktreeSort = z.infer<typeof worktreeSortSchema>
 
@@ -102,6 +143,10 @@ export const worktreeSchema = z.object({
   repositoryId: z.string(),
   path: z.string(),
   branch: z.string(),
+  /** Last post-create setup result, retained when setup fails for retry. */
+  postCreateSetup: commandResultSchema.optional(),
+  /** Running is persisted so a restart can mark unfinished setup as interrupted. */
+  postCreateSetupState: z.enum(['running', 'interrupted']).optional(),
   headCommit: z.string().optional(),
   isMain: z.boolean().default(false),
   /** Latest known activity: changed-file mtime, commit time, or directory mtime. */
@@ -126,8 +171,33 @@ export const pullRequestSchema = z.object({
    *  (e.g. a long-lived release branch), which is why a merged PR can still read
    *  as unmerged against the base. */
   targetBranch: z.string().optional(),
+  /** Provider head SHA, when returned; prevents an old merged PR from proving a reused branch landed. */
+  headCommit: z.string().optional(),
 })
 export type PullRequest = z.infer<typeof pullRequestSchema>
+
+export const pullRequestLookupSchema = z.object({
+  state: z.enum(['found', 'none', 'not-configured', 'not-applicable', 'error']),
+  checkedAt: z.number(),
+  lastSuccessAt: z.number().optional(),
+  credentialSource: z.enum(['project', 'global', 'environment', 'cli', 'none']).optional(),
+  error: z
+    .object({
+      kind: z.enum([
+        'authentication',
+        'forbidden',
+        'network',
+        'rate-limited',
+        'invalid-response',
+        'configuration',
+        'unknown',
+      ]),
+      message: z.string(),
+    })
+    .optional(),
+  pullRequest: pullRequestSchema.optional(),
+})
+export type PullRequestLookup = z.infer<typeof pullRequestLookupSchema>
 
 /**
  * A pull request is a proposal to merge *this* branch into the base, so the
@@ -180,12 +250,22 @@ export const worktreeStatusSchema = z.object({
   behind: z.number().default(0),
   unpushed: z.number().default(0),
   mergedIntoBase: z.boolean().default(false),
+  /** Local reflog records a commit made on this branch that remains in HEAD.
+   * Ancestry alone also holds for a fresh branch and is not completion proof. */
+  hasMergedBranchHistory: z.boolean().optional(),
+  /** Remote configuration and tracking are separate from ahead/behind counts. */
+  hasRemote: z.boolean().optional(),
+  hasUpstream: z.boolean().optional(),
   baseBranch: z.string(),
   /** Set when the base-branch fetch failed, so `mergedIntoBase` was decided
    *  against a possibly-stale ref (or no ref at all) and cannot be trusted. */
   baseFetchError: z.string().optional(),
   hasOpenPR: z.boolean().default(false),
   pullRequest: pullRequestSchema.optional(),
+  /** Lookup health for the live branch. A retained pullRequest is display-only unless state is found. */
+  prLookup: pullRequestLookupSchema.optional(),
+  /** Distinguishes a missing lookup from a project with no provider. */
+  providerConfigured: z.boolean().optional(),
   lastFetched: z.number().optional(),
   /** Commits on the freshly-fetched base ref that this branch has not integrated
    *  yet. This is the "base moved on without you" count, and is unrelated to
@@ -235,11 +315,15 @@ export type ScanResult = z.infer<typeof scanResultSchema>
 
 export const appSettingsSchema = z.object({
   watchedDirectories: z.array(z.string()).default([]),
+  /** Include repositories found under AI-agent folders in the user's home directory. */
+  includeAgentWorktrees: z.boolean().default(false),
   excludedPaths: z
     .array(z.string())
     .default(['~/.claude/plugins/cache', '~/.codex/plugins/cache', '~/.devin/plugins/cache']),
   defaultEditor: z.string().default('cursor'),
   defaultTerminal: z.string().optional(),
+  defaultWorktreeLocation: worktreeLocationSchema.default('sibling'),
+  defaultWorktreeCustomParent: z.string().optional(),
   theme: z.enum(['system', 'light', 'dark']).default('system'),
   /** Optional global PATs used when a repo has no token of its own */
   githubToken: z.string().optional(),
@@ -258,6 +342,19 @@ export const safetyResultSchema = z.object({
 })
 export type SafetyResult = z.infer<typeof safetyResultSchema>
 
+function providerConfirmedLanded(status: WorktreeStatus, branch: string): boolean {
+  return (
+    status.prLookup?.state === 'found' &&
+    status.pullRequest?.state === 'merged' &&
+    status.pullRequest.branch === branch &&
+    !!status.pullRequest.headCommit &&
+    !!status.headCommit &&
+    /^[a-f0-9]{40}$|^[a-f0-9]{64}$/i.test(status.pullRequest.headCommit) &&
+    status.pullRequest.headCommit.toLowerCase() === status.headCommit.toLowerCase() &&
+    status.pullRequest.targetBranch === status.baseBranch
+  )
+}
+
 /**
  * The single source of truth for "is this worktree safe to remove". It lives in
  * contracts because both the main process (delete confirmation) and the
@@ -275,19 +372,43 @@ export function worktreeSafetyReasons(worktree: Worktree, status: WorktreeStatus
   const branch = status.branch ?? worktree.branch
 
   if (status.statusReadError) reasons.push('Could not inspect working tree safely')
+  if (status.baseFetchError) reasons.push('Could not verify the base branch (fetch failed)')
+  if (branch === 'HEAD' || branch === status.baseBranch)
+    reasons.push('Worktree is not on a completed feature branch')
   if (status.dirty || status.staged) reasons.push('Has uncommitted changes')
   if (status.hasUntracked) reasons.push('Has untracked files')
   if (status.ahead > 0 || status.unpushed > 0) {
     reasons.push(`${status.ahead > 0 ? status.ahead : status.unpushed} unpushed commit(s)`)
   }
-  if (!status.mergedIntoBase && branch !== status.baseBranch && branch !== 'HEAD') {
+  if (
+    !status.mergedIntoBase &&
+    !providerConfirmedLanded(status, branch) &&
+    branch !== status.baseBranch &&
+    branch !== 'HEAD'
+  ) {
     reasons.push(
       status.baseFetchError
         ? `Could not confirm the branch is merged into ${status.baseBranch} (fetch failed)`
         : `Branch not merged into ${status.baseBranch}`
     )
   }
+  if (
+    branch !== 'HEAD' &&
+    branch !== status.baseBranch &&
+    status.mergedIntoBase &&
+    !status.hasMergedBranchHistory &&
+    !providerConfirmedLanded(status, branch)
+  )
+    reasons.push('Could not confirm completed branch work')
   if (status.hasOpenPR) reasons.push('Has an open pull request')
+  if (
+    branchCanHavePullRequest(branch, status.baseBranch) &&
+    status.providerConfigured &&
+    !(status.prLookup?.state === 'found' && status.pullRequest?.branch === branch) &&
+    status.prLookup?.state !== 'none'
+  ) {
+    reasons.push('Could not verify pull requests with the configured provider')
+  }
 
   return reasons
 }
@@ -382,22 +503,20 @@ export function cleanupCandidacy(
   // A merge we could not confirm is not a merge: the base ref may be stale or
   // missing entirely, and offering to delete on that basis loses work.
   if (status.baseFetchError || status.statusReadError) return undefined
+  if (
+    status.providerConfigured &&
+    !(status.prLookup?.state === 'found' && status.pullRequest?.branch === branch) &&
+    status.prLookup?.state !== 'none'
+  )
+    return undefined
   // Squash/rebase merges do not make the old branch HEAD an ancestor of base,
   // but a provider-confirmed merged PR into this exact base is equally strong
   // evidence that the branch landed. A PR into a release branch is not.
-  const providerConfirmedLanded =
-    status.pullRequest?.state === 'merged' &&
-    status.pullRequest.targetBranch !== undefined &&
-    status.pullRequest.targetBranch === status.baseBranch
-  if (!status.mergedIntoBase && !providerConfirmedLanded) return undefined
+  const landedByProvider = providerConfirmedLanded(status, branch)
+  if (!(status.mergedIntoBase && status.hasMergedBranchHistory) && !landedByProvider)
+    return undefined
 
-  const reasons = worktreeSafetyReasons(worktree, {
-    ...status,
-    // The shared safety check only understands ancestry. Once the provider has
-    // confirmed this branch landed in the configured base, give it that same
-    // fact so "not merged" is not added back as a review reason.
-    mergedIntoBase: status.mergedIntoBase || providerConfirmedLanded,
-  })
+  const reasons = worktreeSafetyReasons(worktree, status)
   return reasons.length === 0
     ? { kind: 'ready', branch, reasons: [] }
     : { kind: 'review', branch, reasons }

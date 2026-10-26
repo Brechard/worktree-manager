@@ -35,7 +35,7 @@ export function TitleBar({ title, trailing, className }: TitleBarProps) {
           </h1>
         ) : null}
         {isDev && (
-          <span className="shrink-0 rounded bg-warning/20 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-warning">
+          <span className="shrink-0 rounded bg-warning/20 px-1.5 py-0.5 text-xs font-bold uppercase tracking-wide text-warning">
             Dev
           </span>
         )}

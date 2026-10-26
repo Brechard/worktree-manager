@@ -7,6 +7,10 @@
   },
   icon: 'resources/icon.png',
   files: ['dist-electron', 'package.json'],
+  extraResources: [
+    { from: 'resources/icon.png', to: 'icon.png' },
+    { from: 'resources/icon-rounded.png', to: 'icon-rounded.png' },
+  ],
   mac: {
     icon: 'resources/icon.icns',
     artifactName: '${productName}-${version}-${arch}.${ext}',

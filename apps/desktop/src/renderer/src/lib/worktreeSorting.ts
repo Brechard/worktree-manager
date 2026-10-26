@@ -6,15 +6,15 @@ import type {
 } from '@worktree/contracts'
 // One implementation, shared with the main process's delete confirmation.
 export { isSafeToDelete } from '@worktree/contracts'
-import { isSafeToDelete } from '@worktree/contracts'
+import { cleanupCandidacy } from '@worktree/contracts'
 
 export type WorktreeSafetyGroup = 'primary' | 'prunable' | 'safe' | 'attention'
 
 export const SAFETY_GROUP_LABELS: Record<WorktreeSafetyGroup, string> = {
   primary: 'Primary worktree',
   prunable: 'Stale · prune first',
-  safe: 'Safe to remove',
-  attention: 'Needs attention',
+  safe: 'Ready to clean',
+  attention: 'Active work',
 }
 
 export function getWorktreeSafetyGroup(
@@ -23,7 +23,7 @@ export function getWorktreeSafetyGroup(
 ): WorktreeSafetyGroup {
   if (worktree.isMain) return 'primary'
   if (worktree.prunable) return 'prunable'
-  return isSafeToDelete(worktree, status) ? 'safe' : 'attention'
+  return cleanupCandidacy(worktree, status)?.kind === 'ready' ? 'safe' : 'attention'
 }
 
 function liveBranch(worktree: Worktree, status?: WorktreeStatus): string {

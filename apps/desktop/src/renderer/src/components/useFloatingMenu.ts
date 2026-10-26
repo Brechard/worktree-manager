@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
+import { useId, useLayoutEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 
 interface FloatingMenuPosition {
   top: number
@@ -17,11 +17,15 @@ const MENU_GAP = 4
 export function useFloatingMenu(open: boolean, setOpen: Dispatch<SetStateAction<boolean>>) {
   const anchorRef = useRef<HTMLDivElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const focusedOpenRef = useRef(false)
+  const menuId = useId()
   const [position, setPosition] = useState<FloatingMenuPosition | null>(null)
 
   useLayoutEffect(() => {
     if (!open) {
       setPosition(null)
+      focusedOpenRef.current = false
       return
     }
 
@@ -66,6 +70,23 @@ export function useFloatingMenu(open: boolean, setOpen: Dispatch<SetStateAction<
     }
     document.addEventListener('mousedown', closeOnPointerDown)
 
+    const closeOnFocusLeave = (event: FocusEvent) => {
+      const target = event.target as Node
+      if (!anchorRef.current?.contains(target) && !menuRef.current?.contains(target)) {
+        setOpen(false)
+      }
+    }
+    document.addEventListener('focusin', closeOnFocusLeave)
+
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopPropagation()
+      setOpen(false)
+      triggerRef.current?.focus()
+    }
+    document.addEventListener('keydown', closeOnEscape, true)
+
     const closeOnScroll = (event: Event) => {
       if (!menuRef.current?.contains(event.target as Node)) setOpen(false)
     }
@@ -75,9 +96,24 @@ export function useFloatingMenu(open: boolean, setOpen: Dispatch<SetStateAction<
       window.removeEventListener('resize', updatePosition)
       resizeObserver.disconnect()
       document.removeEventListener('mousedown', closeOnPointerDown)
+      document.removeEventListener('focusin', closeOnFocusLeave)
+      document.removeEventListener('keydown', closeOnEscape, true)
       document.removeEventListener('scroll', closeOnScroll, true)
     }
   }, [open, setOpen])
 
-  return { anchorRef, menuRef, position }
+  useLayoutEffect(() => {
+    if (!open || !position || focusedOpenRef.current) return
+    menuRef.current
+      ?.querySelector<HTMLElement>('button:not(:disabled)')
+      ?.focus({ preventScroll: true })
+    focusedOpenRef.current = true
+  }, [open, position])
+
+  const closeWithFocus = () => {
+    triggerRef.current?.focus()
+    setOpen(false)
+  }
+
+  return { anchorRef, menuRef, triggerRef, menuId, position, closeWithFocus }
 }

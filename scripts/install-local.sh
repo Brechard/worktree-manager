@@ -36,16 +36,25 @@ esac
 
 unset ELECTRON_RUN_AS_NODE
 
-if command -v bun >/dev/null 2>&1; then
-  PKG="bun"
-elif command -v npm >/dev/null 2>&1; then
-  PKG="npm"
-else
-  echo "Neither bun nor npm found on PATH. Install Bun from https://bun.sh first." >&2
+if ! command -v bun >/dev/null 2>&1; then
+  echo "Bun 1.4.4+ is required. Install Bun from https://bun.sh first." >&2
   exit 1
 fi
+BUN_VERSION="$(bun --version)"
+if [[ ! "$BUN_VERSION" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+  echo "Could not read Bun version: $BUN_VERSION" >&2
+  exit 1
+fi
+BUN_MAJOR="${BASH_REMATCH[1]}"
+BUN_MINOR="${BASH_REMATCH[2]}"
+BUN_PATCH="${BASH_REMATCH[3]}"
+if (( BUN_MAJOR < 1 || (BUN_MAJOR == 1 && (BUN_MINOR < 4 || (BUN_MINOR == 4 && BUN_PATCH < 4))) )); then
+  echo "Bun 1.4.4+ is required; found $BUN_VERSION." >&2
+  exit 1
+fi
+PKG="bun"
 
-echo "==> Detected $TARGET_OS ($ARCH), using $PKG"
+echo "==> Detected $TARGET_OS ($ARCH), using $PKG $BUN_VERSION"
 
 echo "==> Installing dependencies"
 "$PKG" install

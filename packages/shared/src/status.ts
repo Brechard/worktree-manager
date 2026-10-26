@@ -1,5 +1,5 @@
 import type {
-  PullRequest,
+  PullRequestLookup,
   Repository,
   RepositoryBaseStatus,
   SafetyResult,
@@ -14,6 +14,7 @@ import {
   getBehindCommits,
   getCurrentBranch,
   getHeadCommit,
+  hasBranchCommitHistory,
   getIncomingCommits,
   getRefAheadBehind,
   getStatusFiles,
@@ -34,9 +35,41 @@ export interface StatusOptions {
   /** Looks up the PR for a branch. Called with the *live* branch resolved
    *  below rather than the one captured at scan time, and only when that
    *  branch can have a PR at all — see `branchCanHavePullRequest`. */
-  resolvePullRequest?: (branch: string) => Promise<PullRequest | undefined>
+  resolvePullRequest?: (branch: string) => Promise<PullRequestLookup>
   /** One repository-level ref snapshot shared by all of its worktrees. */
   baseSnapshot?: BaseBranchSnapshot
+}
+
+const lastKnownPr = new Map<
+  string,
+  { pullRequest: NonNullable<PullRequestLookup['pullRequest']>; lastSuccessAt: number }
+>()
+function prIdentity(repository: Repository, branch: string, headCommit?: string): string {
+  const provider = repository.provider
+  return JSON.stringify([
+    repository.id,
+    provider?.type,
+    provider?.organization,
+    provider?.project,
+    provider?.repository,
+    branch,
+    headCommit,
+  ])
+}
+
+export function clearPullRequestHistory(filter?: {
+  repositoryIds?: Set<string>
+  providerTypes?: Set<string>
+}): void {
+  if (!filter) return void lastKnownPr.clear()
+  for (const key of lastKnownPr.keys()) {
+    const [repositoryId, providerType] = JSON.parse(key) as [string, string | undefined]
+    if (
+      filter.repositoryIds?.has(repositoryId) ||
+      (providerType && filter.providerTypes?.has(providerType))
+    )
+      lastKnownPr.delete(key)
+  }
 }
 
 export async function getWorktreeStatus(options: StatusOptions): Promise<WorktreeStatus> {
@@ -56,6 +89,9 @@ export async function getWorktreeStatus(options: StatusOptions): Promise<Worktre
       behind: 0,
       unpushed: 0,
       mergedIntoBase: false,
+      hasMergedBranchHistory: false,
+      hasRemote: false,
+      hasUpstream: false,
       baseBranch,
       hasOpenPR: false,
       behindBase: 0,
@@ -75,8 +111,8 @@ export async function getWorktreeStatus(options: StatusOptions): Promise<Worktre
     baseSnapshot?.mergeRef ?? (await resolveBaseRef(cwd, baseBranch).catch(() => undefined))
 
   let statusReadError: string | undefined
-  const statusPromise = getStatusPorcelain(cwd).catch((error) => {
-    statusReadError = String(error)
+  const statusPromise = getStatusPorcelain(cwd).catch(() => {
+    statusReadError = 'Could not read the Git working tree status.'
     return { dirty: false, staged: false, hasUntracked: false }
   })
 
@@ -96,7 +132,7 @@ export async function getWorktreeStatus(options: StatusOptions): Promise<Worktre
     isMerged(cwd, baseBranch, baseSnapshot?.mergeRef).catch(() => false),
     countUnpushed(cwd).catch(() => 0),
     getCurrentBranch(cwd).catch(() => 'HEAD'),
-    getHeadCommit(cwd).catch(() => undefined),
+    getHeadCommit(cwd, true).catch(() => undefined),
     baseFullRef
       ? getRefAheadBehind(cwd, baseFullRef).catch(() => ({ ahead: 0, behind: 0 }))
       : Promise.resolve({ ahead: 0, behind: 0 }),
@@ -106,13 +142,34 @@ export async function getWorktreeStatus(options: StatusOptions): Promise<Worktre
 
   const hasRemoteConfigured = await hasRemote(cwd).catch(() => false)
   const detached = branch === 'HEAD'
+  const hasMergedBranchHistory =
+    merged && !detached && branch !== resolvedBase && !baseSnapshot?.fetchError
+      ? await hasBranchCommitHistory(cwd, branch).catch(() => false)
+      : false
 
   // Keyed off the live branch, so checking out a different branch swaps the PR
   // (and dropping back onto the base drops it) on the very next refresh. It has
   // to run after the git reads rather than alongside them for that reason.
-  const pullRequest = branchCanHavePullRequest(branch, resolvedBase)
-    ? await resolvePullRequest?.(branch)
-    : undefined
+  const applicable = branchCanHavePullRequest(branch, resolvedBase)
+  const identity = prIdentity(repository, branch, headCommit)
+  const prLookup: PullRequestLookup = !applicable
+    ? { state: 'not-applicable', checkedAt: Date.now(), credentialSource: 'none' }
+    : resolvePullRequest
+      ? await resolvePullRequest(branch).catch(() => ({
+          state: 'error' as const,
+          checkedAt: Date.now(),
+          error: { kind: 'unknown' as const, message: 'Provider lookup failed.' },
+        }))
+      : { state: 'not-configured', checkedAt: Date.now(), credentialSource: 'none' }
+  if (prLookup.state === 'found' && prLookup.pullRequest)
+    lastKnownPr.set(identity, {
+      pullRequest: prLookup.pullRequest,
+      lastSuccessAt: prLookup.lastSuccessAt ?? prLookup.checkedAt,
+    })
+  if (prLookup.state === 'none') lastKnownPr.delete(identity)
+  const retained = prLookup.state === 'error' ? lastKnownPr.get(identity) : undefined
+  const pullRequest = prLookup.state === 'found' ? prLookup.pullRequest : retained?.pullRequest
+  if (retained) prLookup.lastSuccessAt = retained.lastSuccessAt
 
   const worktreeStatus: WorktreeStatus = {
     worktreeId: worktree.id,
@@ -124,11 +181,18 @@ export async function getWorktreeStatus(options: StatusOptions): Promise<Worktre
     behind: aheadBehind.behind,
     unpushed: hasRemoteConfigured ? (aheadBehind.hasUpstream ? aheadBehind.ahead : unpushed) : 0,
     mergedIntoBase: merged,
+    hasMergedBranchHistory,
+    hasRemote: hasRemoteConfigured,
+    hasUpstream: aheadBehind.hasUpstream,
     baseBranch: resolvedBase,
     // A failed fetch means `merged` was decided against a stale local ref (or no
     // ref at all), so the row has to say "unknown" rather than assert "unmerged".
     ...(baseSnapshot?.fetchError ? { baseFetchError: baseSnapshot.fetchError } : {}),
-    hasOpenPR: pullRequest?.state === 'open' || pullRequest?.state === 'draft',
+    hasOpenPR:
+      prLookup.state === 'found' &&
+      (pullRequest?.state === 'open' || pullRequest?.state === 'draft'),
+    prLookup,
+    providerConfigured: !!repository.provider,
     behindBase: baseAheadBehind.behind,
     aheadBase: baseAheadBehind.ahead,
     mergeCommits,
@@ -164,14 +228,20 @@ export function toRepositoryBaseStatus(
 export async function refreshPullRequest(
   branch: string,
   repository: Repository,
-  globalTokens?: { github?: string; azure?: string }
-): Promise<PullRequest | undefined> {
-  if (!repository.provider) return undefined
-  if (!branchCanHavePullRequest(branch, repository.baseBranch || 'main')) return undefined
+  globalTokens?: { github?: string; azure?: string },
+  credentialSource?: PullRequestLookup['credentialSource'],
+  force = false
+): Promise<PullRequestLookup> {
+  if (!branchCanHavePullRequest(branch, repository.baseBranch || 'main'))
+    return { state: 'not-applicable', checkedAt: Date.now(), credentialSource: 'none' }
   try {
-    return await lookupPullRequest(branch, repository, globalTokens)
+    return await lookupPullRequest(branch, repository, globalTokens, credentialSource, force)
   } catch {
-    return undefined
+    return {
+      state: 'error',
+      checkedAt: Date.now(),
+      error: { kind: 'unknown', message: 'Provider lookup failed.' },
+    }
   }
 }
 

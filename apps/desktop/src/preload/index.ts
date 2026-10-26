@@ -1,6 +1,10 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type {
   AppSettings,
+  CreateWorktreeRequest,
+  WorktreeCreationPreview,
+  WorktreeCreationResult,
+  WorktreeCreationProgress,
   Repository,
   Worktree,
   ScanResult,
@@ -18,6 +22,7 @@ import type {
   CommandResult,
   ProjectActionMode,
   WorktreeDiskUsage,
+  PullRequestLookup,
   ReclaimSpaceResult,
 } from '@worktree/contracts'
 
@@ -29,10 +34,27 @@ const api = {
   getRepositories: (): Promise<Repository[]> => ipcRenderer.invoke('get-repositories'),
   setRepositories: (repositories: Repository[]): Promise<void> =>
     ipcRenderer.invoke('set-repositories', repositories),
+  checkProviderConnection: (repositoryId: string): Promise<PullRequestLookup> =>
+    ipcRenderer.invoke('check-provider-connection', repositoryId),
 
   getWorktrees: (): Promise<Worktree[]> => ipcRenderer.invoke('get-worktrees'),
   setWorktrees: (worktrees: Worktree[]): Promise<void> =>
     ipcRenderer.invoke('set-worktrees', worktrees),
+  previewWorktreeCreation: (request: CreateWorktreeRequest): Promise<WorktreeCreationPreview> =>
+    ipcRenderer.invoke('preview-worktree-creation', request),
+  createWorktree: (request: CreateWorktreeRequest): Promise<WorktreeCreationResult> =>
+    ipcRenderer.invoke('create-worktree', request),
+  retryWorktreeSetup: (request: {
+    repositoryId: string
+    worktreeId: string
+  }): Promise<CommandResult> => ipcRenderer.invoke('retry-worktree-setup', request),
+  onWorktreeCreationProgress: (
+    callback: (progress: WorktreeCreationProgress) => void
+  ): (() => void) => {
+    const listener = (_: unknown, progress: WorktreeCreationProgress) => callback(progress)
+    ipcRenderer.on('worktree-creation-progress', listener)
+    return () => ipcRenderer.removeListener('worktree-creation-progress', listener)
+  },
 
   discoverWorktrees: (options: {
     roots: string[]
@@ -168,6 +190,7 @@ const api = {
   openInEditor: (args: {
     path: string
     editor?: string
+    subdirectory?: string
   }): Promise<{ success: boolean; error?: string }> => ipcRenderer.invoke('open-in-editor', args),
   openInTerminal: (args: {
     path: string

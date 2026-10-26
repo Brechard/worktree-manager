@@ -77,7 +77,7 @@ export function BaseBranchStatus({
           type="button"
           onClick={() => void onUpdate()}
           disabled={busy}
-          className="rounded px-1.5 py-0.5 font-medium text-warning hover:bg-warning/10 disabled:opacity-50"
+          className="rounded px-1.5 py-0.5 text-[13px] font-medium text-warning hover:bg-warning/10 disabled:opacity-50"
         >
           Update
         </button>

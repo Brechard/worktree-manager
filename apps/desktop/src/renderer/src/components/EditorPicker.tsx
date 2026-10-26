@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { AppWindow, Check, ChevronDown } from 'lucide-react'
 import { cn } from '../lib/utils'
 import type { EditorOption } from '../lib/paths'
@@ -55,24 +55,44 @@ export function EditorPicker({
 }: EditorPickerProps) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+  const menuId = useId()
+  const closeWithFocus = () => {
+    triggerRef.current?.focus()
+    setOpen(false)
+  }
 
   useEffect(() => {
     if (!open) return
+    menuRef.current
+      ?.querySelector<HTMLElement>('button:not(:disabled)')
+      ?.focus({ preventScroll: true })
 
     const closeOnOutside = (event: MouseEvent) => {
       if (!ref.current?.contains(event.target as Node)) setOpen(false)
     }
 
+    const closeOnFocusLeave = (event: FocusEvent) => {
+      if (!ref.current?.contains(event.target as Node)) setOpen(false)
+    }
+
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false)
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopPropagation()
+      setOpen(false)
+      triggerRef.current?.focus()
     }
 
     document.addEventListener('mousedown', closeOnOutside)
-    document.addEventListener('keydown', closeOnEscape)
+    document.addEventListener('focusin', closeOnFocusLeave)
+    document.addEventListener('keydown', closeOnEscape, true)
 
     return () => {
       document.removeEventListener('mousedown', closeOnOutside)
-      document.removeEventListener('keydown', closeOnEscape)
+      document.removeEventListener('focusin', closeOnFocusLeave)
+      document.removeEventListener('keydown', closeOnEscape, true)
     }
   }, [open])
 
@@ -86,9 +106,12 @@ export function EditorPicker({
   return (
     <div ref={ref} className="relative">
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen((value) => !value)}
-        className="inline-flex max-w-[220px] items-center gap-1.5 rounded-md bg-transparent px-1 py-0.5 text-left text-xs font-medium hover:bg-accent"
+        aria-expanded={open}
+        aria-controls={open ? menuId : undefined}
+        className="inline-flex max-w-[220px] items-center gap-1.5 rounded-md bg-transparent px-1 py-0.5 text-left text-[13px] font-medium hover:bg-accent"
         title="Editor for this project"
       >
         <EditorIcon editorId={selectedEditorId} editorIcons={editorIcons} className="h-3.5 w-3.5" />
@@ -99,15 +122,19 @@ export function EditorPicker({
       </button>
 
       {open && (
-        <div className="absolute right-0 z-20 mt-1 w-64 rounded-md border border-border bg-background p-1 shadow-2xl ring-1 ring-border">
+        <div
+          id={menuId}
+          ref={menuRef}
+          className="absolute right-0 z-20 mt-1 w-64 rounded-md border border-border bg-background p-1 shadow-2xl ring-1 ring-border"
+        >
           <button
             type="button"
             onClick={() => {
               onChange('')
-              setOpen(false)
+              closeWithFocus()
             }}
             className={cn(
-              'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-foreground hover:bg-accent',
+              'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] text-foreground hover:bg-accent',
               !value && 'bg-accent'
             )}
           >
@@ -131,10 +158,10 @@ export function EditorPicker({
                   type="button"
                   onClick={() => {
                     onChange(option.id)
-                    setOpen(false)
+                    closeWithFocus()
                   }}
                   className={cn(
-                    'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-foreground hover:bg-accent',
+                    'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] text-foreground hover:bg-accent',
                     selected && 'bg-accent'
                   )}
                 >

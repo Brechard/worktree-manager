@@ -78,10 +78,9 @@ export async function refreshBaseBranch(
       `${baseBranch}:${remoteRef}`,
       '+refs/heads/*:refs/remotes/origin/*',
     ])
-    const fetchError =
-      fetchResult.exitCode === 0
-        ? undefined
-        : fetchResult.stderr || fetchResult.stdout || `Could not fetch origin/${baseBranch}`
+    // Git may echo a credential-bearing remote URL in stderr. Status crosses
+    // IPC, so expose only a fixed message here.
+    const fetchError = fetchResult.exitCode === 0 ? undefined : 'Could not fetch the base branch.'
 
     const [localExists, remoteExists] = await Promise.all([
       refExists(cwd, localRef),
@@ -119,7 +118,7 @@ export async function refreshBaseBranch(
       ...(fetchError ? { fetchError } : { fetchedAt: Date.now() }),
       ...(effectiveMergeRef ? { mergeRef: effectiveMergeRef } : {}),
     }
-  } catch (error) {
+  } catch {
     return {
       baseBranch,
       state: 'unknown',
@@ -127,7 +126,7 @@ export async function refreshBaseBranch(
       remoteExists: false,
       ahead: 0,
       behind: 0,
-      fetchError: error instanceof Error ? error.message : String(error),
+      fetchError: 'Could not fetch the base branch.',
     }
   }
 }

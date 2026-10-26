@@ -11,9 +11,13 @@ import {
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { existsSync } from 'node:fs'
-import { readFile, writeFile, mkdir, copyFile, stat, readdir, unlink, rm } from 'node:fs/promises'
+import { createCredentialStore, migrateLegacyProfile } from './credential-store.js'
+import { verifiedRemovalTarget } from './removal-target.js'
+import { recheckRemovalStatus } from './removal-status.js'
+import { scanRoots } from './scan-sources.js'
+import { createWorktreeStore } from './worktree-store.js'
+import { stat, readdir, unlink, rm, realpath } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
-import { z } from 'zod'
 import {
   checkoutBranch,
   commitWorktree,
@@ -29,10 +33,13 @@ import {
   getDefaultBranch,
   getGitDir,
   getHeadCommit,
+  clearPullRequestHistory,
+  clearProviderLookupCache,
   getWorktreeDetails,
   getWorktreeStatus,
   hydrateShellPath,
   measureWorktreeDisk,
+  lookupPullRequest,
   mergeBranch,
   parseProviderFromRemoteUrl,
   pruneWorktrees,
@@ -43,17 +50,21 @@ import {
   resolveWorkingDirectory,
   runCommand,
   runProjectCommand,
+  previewWorktreeCreation,
+  createGitWorktree,
+  runPostCreateSetup,
   syncWithBase,
   toRepositoryBaseStatus,
   updateBaseBranch,
   type MergeMode,
 } from '@worktree/shared'
 import {
-  appSettingsSchema,
   cleanupCandidacy,
-  repositorySchema,
-  worktreeSchema,
   type AppSettings,
+  createWorktreeRequestSchema,
+  type CreateWorktreeRequest,
+  type WorktreeCreationResult,
+  type WorktreeCreationProgress,
   type Repository,
   type RepositoryBaseStatus,
   type ScanProgress,
@@ -64,6 +75,7 @@ import {
   type WorktreeDetails,
   type WorktreeDiskUsage,
   type WorktreeStatus,
+  type PullRequestLookup,
 } from '@worktree/contracts'
 
 type BaseBranchSnapshot = Awaited<ReturnType<typeof refreshBaseBranch>>
@@ -82,37 +94,6 @@ app.commandLine.appendSwitch('enable-smooth-scrolling', 'true')
 
 const isDev = !app.isPackaged
 
-const AI_AGENT_DIRS = ['.t3', '.claude', '.codex', '.devin', '.aider', '.windsurf', '.cursor']
-
-function getAiAgentRoots(): string[] {
-  const home = homedir()
-  const roots: string[] = []
-  for (const d of AI_AGENT_DIRS) {
-    const p = join(home, d)
-    if (existsSync(p)) roots.push(p)
-  }
-  return roots
-}
-
-/** Drop roots that live inside another root so we don't scan the same tree twice. */
-function dedupeRoots(roots: string[]): string[] {
-  const seen = new Set<string>()
-  const cleaned: string[] = []
-  for (const r of roots) {
-    const normalized = r.replace(/\/+$/, '')
-    if (normalized.length === 0 || seen.has(normalized)) continue
-    seen.add(normalized)
-    cleaned.push(normalized)
-  }
-  cleaned.sort((a, b) => a.length - b.length)
-  const kept: string[] = []
-  for (const root of cleaned) {
-    if (kept.some((k) => root === k || root.startsWith(k + '/'))) continue
-    kept.push(root)
-  }
-  return kept
-}
-
 /** Seconds-since-epoch `exp` claim of a JWT, or undefined for non-JWTs. */
 function jwtExpiry(token: string): number | undefined {
   const parts = token.split('.')
@@ -128,120 +109,135 @@ function jwtExpiry(token: string): number | undefined {
 // Azure AAD access tokens (from `az account get-access-token`) expire ~hourly.
 // Cache a fresh one in memory and re-fetch via the CLI when it's about to expire
 // so PR lookups keep working instead of silently going stale.
-let azureTokenCache: { token: string; exp: number } | null = null
 
 function tokenIsFresh(token: string | undefined): boolean {
   if (!token) return false
   const exp = jwtExpiry(token)
-  if (exp === undefined) return true // opaque PAT — assume long-lived
-  return exp * 1000 > Date.now() + 60_000
+  // Opaque PAT expiry is unknown. The provider response determines its health.
+  return exp === undefined || exp * 1000 > Date.now() + 60_000
 }
 
-async function resolveAzureToken(stored?: string): Promise<string | undefined> {
-  if (tokenIsFresh(stored)) return stored
-  if (azureTokenCache && azureTokenCache.exp * 1000 > Date.now() + 60_000) {
-    return azureTokenCache.token
+let azureDetection:
+  { expiresAt: number; value?: Awaited<ReturnType<typeof detectProviderToken>> } | undefined
+let azureDetectionPending: Promise<Awaited<ReturnType<typeof detectProviderToken>>> | undefined
+
+async function detectAzureCredential(force = false) {
+  if (!force && azureDetection && azureDetection.expiresAt > Date.now()) return azureDetection.value
+  if (!azureDetectionPending) {
+    azureDetectionPending = detectProviderToken('azure')
+      .catch(() => undefined)
+      .then((value) => {
+        azureDetection = { value, expiresAt: Date.now() + 30_000 }
+        return value
+      })
+      .finally(() => {
+        azureDetectionPending = undefined
+      })
   }
-  const detected = await detectProviderToken('azure').catch(() => undefined)
-  if (detected?.token) {
-    const exp = jwtExpiry(detected.token) ?? Math.floor(Date.now() / 1000) + 3000
-    azureTokenCache = { token: detected.token, exp }
-    // Persist so the Settings screen and next launch start from a fresh token.
-    try {
-      const settings = await loadSettings()
-      if (settings.azureToken !== detected.token) {
-        await saveSettings({ ...settings, azureToken: detected.token })
-      }
-    } catch {
-      // best-effort persistence
+  return azureDetectionPending
+}
+
+async function resolveAzureToken(
+  stored?: string,
+  forceDetection = false
+): Promise<{ token?: string; source: 'global' | 'environment' | 'cli' | 'none' }> {
+  if (stored && tokenIsFresh(stored)) return { token: stored, source: 'global' }
+  const detected = await detectAzureCredential(forceDetection)
+  if (detected?.token)
+    return {
+      token: detected.token,
+      source: detected.source.startsWith('env:') ? 'environment' : 'cli',
     }
-    return detected.token
-  }
-  return stored // fall back to the (possibly expired) stored token
+  return stored ? { token: stored, source: 'global' } : { source: 'none' }
 }
 
 const configDir = () => join(app.getPath('userData'), 'config')
-const configPath = () => join(configDir(), 'settings.json')
-const reposPath = () => join(configDir(), 'repositories.json')
 const worktreesPath = () => join(configDir(), 'worktrees.json')
-
-async function ensureConfigDir() {
-  await mkdir(configDir(), { recursive: true })
-}
 
 // Earlier builds ran unpackaged with the default app name, storing config under
 // `<appData>/@worktree/desktop`. Now that we set a stable name ("Worktree
 // Manager") the userData dir changes, so carry the old config over once.
 async function migrateLegacyConfig() {
   try {
-    if (existsSync(configPath())) return
-    const legacyDir = join(app.getPath('appData'), '@worktree', 'desktop', 'config')
-    if (!existsSync(join(legacyDir, 'settings.json'))) return
-    await ensureConfigDir()
-    for (const file of ['settings.json', 'repositories.json', 'worktrees.json']) {
-      const src = join(legacyDir, file)
-      if (existsSync(src)) await copyFile(src, join(configDir(), file))
-    }
-    console.log('[worktree] migrated legacy config from', legacyDir)
+    const legacyDir = () => join(app.getPath('appData'), '@worktree', 'desktop', 'config')
+    if (
+      await migrateLegacyProfile(
+        legacyDir,
+        configDir(),
+        secureStorage,
+        app.commandLine.hasSwitch('user-data-dir')
+      )
+    )
+      console.log('[worktree] migrated legacy config from', legacyDir())
   } catch (err) {
     console.error('[worktree] legacy config migration failed', err)
   }
 }
 
+const secureStorage = {
+  isEncryptionAvailable: () =>
+    safeStorage.isEncryptionAvailable() &&
+    (process.platform !== 'linux' ||
+      !['basic_text', 'unknown'].includes(safeStorage.getSelectedStorageBackend())),
+  getSelectedStorageBackend: () => safeStorage.getSelectedStorageBackend(),
+  encryptString: (value: string) => safeStorage.encryptString(value),
+  decryptString: (value: Buffer) => safeStorage.decryptString(value),
+}
+const credentialStore = createCredentialStore(configDir(), secureStorage)
+
 async function loadSettings(): Promise<AppSettings> {
-  try {
-    const raw = await readFile(configPath(), 'utf-8')
-    return appSettingsSchema.parse(JSON.parse(raw))
-  } catch {
-    return appSettingsSchema.parse({})
+  return credentialStore.loadSettings()
+}
+async function saveSettings(settings: AppSettings): Promise<void> {
+  const previous = await credentialStore.loadSettings()
+  await credentialStore.saveSettings(settings)
+  const changedProviders = new Set<string>()
+  if (previous.githubToken !== settings.githubToken) changedProviders.add('github')
+  if (previous.azureToken !== settings.azureToken) {
+    changedProviders.add('azure')
+    azureDetection = undefined
+  }
+  if (changedProviders.size) {
+    clearPullRequestHistory({ providerTypes: changedProviders })
+    clearProviderLookupCache()
   }
 }
-
-async function saveSettings(settings: AppSettings) {
-  await ensureConfigDir()
-  await writeFile(configPath(), JSON.stringify(settings, null, 2))
-}
-
 async function loadRepositories(): Promise<Repository[]> {
-  try {
-    const raw = await readFile(reposPath(), 'utf-8')
-    const repos = z.array(repositorySchema).parse(JSON.parse(raw))
-    // Backfill provider from remote URL for repos scanned before auto-detect
-    let changed = false
-    const next = repos.map((repo) => {
-      if (repo.provider || !repo.remoteUrl) return repo
-      const provider = parseProviderFromRemoteUrl(repo.remoteUrl)
-      if (!provider) return repo
-      changed = true
-      return { ...repo, provider }
-    })
-    if (changed) {
-      await saveRepositories(next)
-    }
-    return next
-  } catch {
-    return []
+  const repos = await credentialStore.loadRepositories()
+  let changed = false
+  const next = repos.map((repo) => {
+    if (repo.provider || !repo.remoteUrl) return repo
+    const provider = parseProviderFromRemoteUrl(repo.remoteUrl)
+    if (!provider) return repo
+    changed = true
+    return { ...repo, provider }
+  })
+  if (changed) await saveRepositories(next)
+  return next
+}
+async function saveRepositories(repositories: Repository[]): Promise<void> {
+  const previous = await credentialStore.loadRepositories()
+  await credentialStore.saveRepositories(repositories)
+  const previousById = new Map(previous.map((repository) => [repository.id, repository]))
+  const changedIds = new Set<string>()
+  for (const repository of repositories) {
+    if (
+      JSON.stringify(previousById.get(repository.id)?.provider) !==
+      JSON.stringify(repository.provider)
+    )
+      changedIds.add(repository.id)
+    previousById.delete(repository.id)
+  }
+  for (const id of previousById.keys()) changedIds.add(id)
+  if (changedIds.size) {
+    clearPullRequestHistory({ repositoryIds: changedIds })
+    clearProviderLookupCache()
   }
 }
 
-async function saveRepositories(repositories: Repository[]) {
-  await ensureConfigDir()
-  await writeFile(reposPath(), JSON.stringify(repositories, null, 2))
-}
-
-async function loadWorktrees(): Promise<Worktree[]> {
-  try {
-    const raw = await readFile(worktreesPath(), 'utf-8')
-    return z.array(worktreeSchema).parse(JSON.parse(raw))
-  } catch {
-    return []
-  }
-}
-
-async function saveWorktrees(worktrees: Worktree[]) {
-  await ensureConfigDir()
-  await writeFile(worktreesPath(), JSON.stringify(worktrees, null, 2))
-}
+const worktreeStore = createWorktreeStore(worktreesPath())
+const loadWorktrees = () => worktreeStore.read()
+const saveWorktrees = (worktrees: Worktree[]) => worktreeStore.saveSnapshot(worktrees)
 
 function getIconPath(file = 'icon.png'): string | undefined {
   const candidates = [
@@ -500,6 +496,14 @@ app.whenReady().then(async () => {
   await hydrateShellPath()
 
   await migrateLegacyConfig()
+  // A process exit cannot finish an in-flight shell command. Keep the
+  // worktree and make the interrupted setup explicit on the next launch.
+  const startupWorktrees = await loadWorktrees()
+  await Promise.all(
+    startupWorktrees
+      .filter((worktree) => worktree.postCreateSetupState === 'running')
+      .map((worktree) => worktreeStore.update(worktree.id, { postCreateSetupState: 'interrupted' }))
+  )
   nativeTheme.themeSource = 'system'
 
   // Dock icons are drawn without macOS's rounding mask, so use the pre-rounded
@@ -529,8 +533,208 @@ ipcMain.handle('get-repositories', async () => loadRepositories())
 ipcMain.handle('set-repositories', async (_, repositories: Repository[]) =>
   saveRepositories(repositories)
 )
+
+ipcMain.handle(
+  'check-provider-connection',
+  async (_, repositoryId: string): Promise<PullRequestLookup> => {
+    const repository = (await loadRepositories()).find((item) => item.id === repositoryId)
+    if (!repository)
+      return {
+        state: 'error',
+        checkedAt: Date.now(),
+        error: { kind: 'configuration', message: 'Project was not found.' },
+      }
+    if (!repository.provider)
+      return { state: 'not-configured', checkedAt: Date.now(), credentialSource: 'none' }
+    const settings = await loadSettings()
+    const azureCredential =
+      repository.provider.type === 'azure' && !repository.provider.personalAccessToken
+        ? await resolveAzureToken(settings.azureToken, true)
+        : { source: 'none' as const }
+    const globalTokens = {
+      ...(settings.githubToken ? { github: settings.githubToken } : {}),
+      ...(azureCredential.token ? { azure: azureCredential.token } : {}),
+    }
+    const worktrees = await loadWorktrees()
+    const branch =
+      worktrees.find(
+        (item) =>
+          item.repositoryId === repositoryId &&
+          item.branch !== 'HEAD' &&
+          item.branch !== repository.baseBranch
+      )?.branch ??
+      repository.baseBranch ??
+      'main'
+    return lookupPullRequest(
+      branch,
+      repository,
+      globalTokens,
+      repository.provider.type === 'azure' ? azureCredential.source : 'global',
+      true
+    )
+  }
+)
 ipcMain.handle('get-worktrees', async () => loadWorktrees())
 ipcMain.handle('set-worktrees', async (_, worktrees: Worktree[]) => saveWorktrees(worktrees))
+
+const activeCreations = new Set<string>()
+const activeSetups = new Set<string>()
+const setupIsRunning = (worktree: Worktree) =>
+  activeSetups.has(`${worktree.repositoryId}:${worktree.id}`) ||
+  worktree.postCreateSetupState === 'running'
+const creationProgress = (
+  event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent,
+  progress: WorktreeCreationProgress
+) => {
+  if (!event.sender.isDestroyed()) event.sender.send('worktree-creation-progress', progress)
+}
+
+ipcMain.handle('preview-worktree-creation', async (_, input: CreateWorktreeRequest) => {
+  const request = createWorktreeRequestSchema.parse(input)
+  const repository = (await loadRepositories()).find((item) => item.id === request.repositoryId)
+  if (!repository)
+    return { path: '', branch: request.branch, startRef: '', error: 'Project was not found.' }
+  return previewWorktreeCreation(request, repository, await loadSettings())
+})
+
+ipcMain.handle(
+  'create-worktree',
+  async (event, input: CreateWorktreeRequest): Promise<WorktreeCreationResult> => {
+    const request = createWorktreeRequestSchema.parse(input)
+    if (activeCreations.has(request.repositoryId))
+      return { success: false, error: 'A worktree is already being created for this project.' }
+    activeCreations.add(request.repositoryId)
+    const progress = (
+      stage: WorktreeCreationProgress['stage'],
+      message: string,
+      output?: string,
+      worktree?: Worktree
+    ) =>
+      creationProgress(event, {
+        repositoryId: request.repositoryId,
+        stage,
+        message,
+        ...(output ? { output } : {}),
+        ...(worktree ? { worktree } : {}),
+      })
+    try {
+      progress('validating', 'Checking branch and destination…')
+      const repository = (await loadRepositories()).find((item) => item.id === request.repositoryId)
+      if (!repository) return { success: false, error: 'Project was not found.' }
+      progress('creating', 'Creating Git worktree…')
+      const created = await createGitWorktree(request, repository, await loadSettings())
+      if (!created.worktree)
+        return { success: false, error: created.error ?? 'Git could not create the worktree.' }
+      const worktree = created.worktree
+      if (repository.postCreateCommand?.trim()) worktree.postCreateSetupState = 'running'
+      progress('saving', 'Adding worktree to the project…')
+      try {
+        await worktreeStore.upsertCreated(worktree)
+      } catch (error) {
+        return {
+          success: true,
+          worktree,
+          warning: `Git created the worktree, but the app could not save it: ${error instanceof Error ? error.message : String(error)}. Keep this window open and retry saving or scan the project.`,
+        }
+      }
+      progress('registered', 'Worktree created and available.', undefined, worktree)
+      let setup
+      if (repository.postCreateCommand?.trim()) {
+        const key = `${repository.id}:${worktree.id}`
+        activeSetups.add(key)
+        progress('setup', 'Running project setup…', undefined, worktree)
+        try {
+          setup = await runPostCreateSetup(repository, worktree)
+        } catch (error) {
+          setup = { success: false, output: error instanceof Error ? error.message : String(error) }
+        } finally {
+          activeSetups.delete(key)
+        }
+        if (setup) {
+          worktree.postCreateSetup = setup
+          worktree.postCreateSetupState = undefined
+          try {
+            await worktreeStore.update(worktree.id, {
+              postCreateSetup: setup,
+              postCreateSetupState: undefined,
+            })
+          } catch (error) {
+            created.warning = `Setup finished, but its result could not be saved: ${error instanceof Error ? error.message : String(error)}`
+          }
+        }
+      }
+      progress(
+        'done',
+        setup?.success === false
+          ? 'Worktree created. Setup failed; retry is available.'
+          : 'Worktree ready.',
+        setup?.output,
+        worktree
+      )
+      return {
+        success: true,
+        worktree,
+        ...(setup ? { setup } : {}),
+        ...(created.warning ? { warning: created.warning } : {}),
+      }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    } finally {
+      activeCreations.delete(request.repositoryId)
+    }
+  }
+)
+
+ipcMain.handle(
+  'retry-worktree-setup',
+  async (event, input: { repositoryId: string; worktreeId: string }) => {
+    const key = `${input.repositoryId}:${input.worktreeId}`
+    if (activeCreations.has(input.repositoryId) || activeSetups.has(key))
+      return { success: false, output: 'Setup is already running for this worktree.' }
+    activeSetups.add(key)
+    try {
+      const repository = (await loadRepositories()).find((item) => item.id === input.repositoryId)
+      const worktree = (await loadWorktrees()).find(
+        (item) => item.id === input.worktreeId && item.repositoryId === input.repositoryId
+      )
+      if (!repository || !worktree)
+        return { success: false, output: 'Registered worktree or project was not found.' }
+      if (!repository.postCreateCommand?.trim())
+        return { success: false, output: 'Configure a setup command in Project settings first.' }
+      worktree.postCreateSetupState = 'running'
+      await worktreeStore.update(worktree.id, { postCreateSetupState: 'running' })
+      creationProgress(event, {
+        repositoryId: input.repositoryId,
+        stage: 'setup',
+        message: 'Retrying project setup…',
+        worktree,
+      })
+      let result
+      try {
+        result = await runPostCreateSetup(repository, worktree)
+      } catch (error) {
+        result = { success: false, output: error instanceof Error ? error.message : String(error) }
+      }
+      if (!result) return { success: false, output: 'No setup command is configured.' }
+      worktree.postCreateSetup = result
+      worktree.postCreateSetupState = undefined
+      await worktreeStore.update(worktree.id, {
+        postCreateSetup: result,
+        postCreateSetupState: undefined,
+      })
+      creationProgress(event, {
+        repositoryId: input.repositoryId,
+        stage: 'done',
+        message: result.success ? 'Setup finished.' : 'Setup failed; retry is available.',
+        output: result.output,
+        worktree,
+      })
+      return result
+    } finally {
+      activeSetups.delete(key)
+    }
+  }
+)
 
 let cancelScan = false
 
@@ -547,8 +751,8 @@ ipcMain.handle(
       })
     }
 
-    const roots = dedupeRoots([...(options.roots ?? []), ...getAiAgentRoots()])
     const settings = await loadSettings()
+    const roots = scanRoots(options.roots ?? [], settings.includeAgentWorktrees)
 
     const result = await discoverRepositories({
       roots,
@@ -606,10 +810,14 @@ ipcMain.handle(
   'get-worktree-statuses',
   async (event, args: { worktrees: Worktree[]; repositories: Repository[]; scopeId?: string }) => {
     const settings = await loadSettings()
-    const azureToken = await resolveAzureToken(settings.azureToken)
+    const azureCredential = args.repositories.some(
+      (repo) => repo.provider?.type === 'azure' && !repo.provider.personalAccessToken
+    )
+      ? await resolveAzureToken(settings.azureToken)
+      : { source: 'none' as const }
     const globalTokens = {
       ...(settings.githubToken ? { github: settings.githubToken } : {}),
-      ...(azureToken ? { azure: azureToken } : {}),
+      ...(azureCredential.token ? { azure: azureCredential.token } : {}),
     }
 
     // Progress is tagged with the caller's scope so two projects refreshing at
@@ -688,7 +896,12 @@ ipcMain.handle(
             worktree,
             repository: repo,
             resolvePullRequest: (branch) =>
-              refreshPullRequest(branch, repo, globalTokens).catch(() => undefined),
+              refreshPullRequest(
+                branch,
+                repo,
+                globalTokens,
+                repo.provider?.type === 'azure' ? azureCredential.source : 'global'
+              ),
             ...(baseSnapshot ? { baseSnapshot } : {}),
           }).catch(() => null)
         } finally {
@@ -711,10 +924,13 @@ ipcMain.handle(
   'get-worktree-status',
   async (_, args: { worktree: Worktree; repository: Repository }): Promise<WorktreeStatus> => {
     const settings = await loadSettings()
-    const azureToken = await resolveAzureToken(settings.azureToken)
+    const azureCredential =
+      args.repository.provider?.type === 'azure' && !args.repository.provider.personalAccessToken
+        ? await resolveAzureToken(settings.azureToken)
+        : { source: 'none' as const }
     const globalTokens = {
       ...(settings.githubToken ? { github: settings.githubToken } : {}),
-      ...(azureToken ? { azure: azureToken } : {}),
+      ...(azureCredential.token ? { azure: azureCredential.token } : {}),
     }
     // Take the same fetched, remote-first base ref the full refresh uses.
     // Without it this path fell back to the local `refs/heads/<base>`, so the
@@ -729,7 +945,12 @@ ipcMain.handle(
       worktree: args.worktree,
       repository: args.repository,
       resolvePullRequest: (branch) =>
-        refreshPullRequest(branch, args.repository, globalTokens).catch(() => undefined),
+        refreshPullRequest(
+          branch,
+          args.repository,
+          globalTokens,
+          args.repository.provider?.type === 'azure' ? azureCredential.source : 'global'
+        ),
       ...(baseSnapshot ? { baseSnapshot } : {}),
     })
   }
@@ -902,6 +1123,22 @@ ipcMain.handle(
     }
   ) => {
     try {
+      const target = await verifiedRemovalTarget(
+        args.worktreePath,
+        args.repoPath,
+        await loadRepositories(),
+        await loadWorktrees()
+      )
+      if (
+        !target ||
+        !target.repository.preDeleteCommand ||
+        target.repository.preDeleteCommand !== args.command
+      ) {
+        return {
+          success: false,
+          output: 'Cleanup target or project command is no longer registered.',
+        }
+      }
       return await runPreDeleteCommand(
         args.command,
         {
@@ -938,6 +1175,13 @@ ipcMain.handle('push-worktree', async (_, path: string) => {
 })
 
 ipcMain.handle('checkout-branch', async (_, args: { path: string; branch: string }) => {
+  const actualPath = await realpath(args.path).catch(() => args.path)
+  const target = (await loadWorktrees()).find((worktree) => worktree.path === actualPath)
+  if (target && setupIsRunning(target))
+    return {
+      success: false,
+      output: 'Project setup is running. Wait for it to finish before switching branches.',
+    }
   return checkoutBranch(args.path, args.branch)
 })
 
@@ -962,11 +1206,17 @@ ipcMain.handle('open-directory-dialog', async () => {
   return result.filePaths
 })
 
-ipcMain.handle('open-in-editor', async (_, { path, editor }: { path: string; editor?: string }) => {
-  const settings = await loadSettings()
-  const editorId = editor || settings.defaultEditor || 'code'
-  return openInEditor(path, editorId)
-})
+ipcMain.handle(
+  'open-in-editor',
+  async (
+    _,
+    { path, editor, subdirectory }: { path: string; editor?: string; subdirectory?: string }
+  ) => {
+    const settings = await loadSettings()
+    const editorId = editor || settings.defaultEditor || 'code'
+    return openInEditor(resolveWorkingDirectory(path, subdirectory), editorId)
+  }
+)
 
 ipcMain.handle(
   'open-in-terminal',
@@ -1059,6 +1309,32 @@ ipcMain.handle(
     }
   ) => {
     try {
+      const target = await verifiedRemovalTarget(
+        path,
+        repoPath,
+        await loadRepositories(),
+        await loadWorktrees()
+      )
+      if (!target)
+        return { success: false, error: 'Removal target is not a registered Git worktree.' }
+      if (setupIsRunning(target.worktree))
+        return {
+          success: false,
+          error: 'Project setup is running. Wait for it to finish before removing this worktree.',
+        }
+      if (missing && existsSync(path))
+        return {
+          success: false,
+          error: 'The worktree directory exists; refresh before removing it.',
+        }
+      if (
+        worktree &&
+        (worktree.id !== target.worktree.id || repository?.id !== target.repository.id)
+      ) {
+        return { success: false, error: 'Removal target does not match the registered worktree.' }
+      }
+      worktree = target.worktree
+      repository = target.repository
       // Any automatic branch deletion is destructive even when the directory
       // itself goes to Trash. Revalidate it in main; renderer status is only a
       // display snapshot and can change before the click reaches IPC.
@@ -1077,33 +1353,46 @@ ipcMain.handle(
           }
         }
         const settings = await loadSettings()
-        const azureToken = await resolveAzureToken(settings.azureToken)
+        const azureCredential =
+          repository.provider?.type === 'azure' && !repository.provider.personalAccessToken
+            ? await resolveAzureToken(settings.azureToken, true)
+            : { source: 'none' as const }
         const globalTokens = {
           ...(settings.githubToken ? { github: settings.githubToken } : {}),
-          ...(azureToken ? { azure: azureToken } : {}),
+          ...(azureCredential.token ? { azure: azureCredential.token } : {}),
         }
         const baseSnapshot = await refreshBaseBranch(
-          statusCwd(repository, [worktree]),
+          statusCwd(repository!, [worktree!]),
           repository.baseBranch || 'main'
         ).catch(() => undefined)
-        const fresh = await getWorktreeStatus({
+        if (!baseSnapshot) {
+          return { success: false, error: 'Could not verify the base branch before deletion.' }
+        }
+        const { status: rechecked, stable: sameLocalState } = await recheckRemovalStatus({
           worktree,
           repository,
           resolvePullRequest: (liveBranch) =>
-            refreshPullRequest(liveBranch, repository, globalTokens).catch(() => undefined),
+            refreshPullRequest(
+              liveBranch,
+              repository!,
+              globalTokens,
+              repository!.provider?.type === 'azure' ? azureCredential.source : 'global',
+              true
+            ),
           ...(baseSnapshot ? { baseSnapshot } : {}),
         })
         const expectedBranch = expectedStatus.branch ?? worktree.branch
-        const freshBranch = fresh.branch ?? worktree.branch
+        const freshBranch = rechecked.branch ?? worktree.branch
         const sameSnapshot =
+          sameLocalState &&
           freshBranch === expectedBranch &&
-          fresh.headCommit === expectedStatus.headCommit &&
-          fresh.dirty === expectedStatus.dirty &&
-          fresh.staged === expectedStatus.staged &&
-          fresh.hasUntracked === expectedStatus.hasUntracked &&
-          fresh.ahead === expectedStatus.ahead &&
-          fresh.unpushed === expectedStatus.unpushed
-        const freshCandidacy = cleanupCandidacy(worktree, fresh)
+          rechecked.headCommit === expectedStatus.headCommit &&
+          rechecked.dirty === expectedStatus.dirty &&
+          rechecked.staged === expectedStatus.staged &&
+          rechecked.hasUntracked === expectedStatus.hasUntracked &&
+          rechecked.ahead === expectedStatus.ahead &&
+          rechecked.unpushed === expectedStatus.unpushed
+        const freshCandidacy = cleanupCandidacy(worktree, rechecked)
         // Permanent cleanup is reserved for the plain, clean case. A review
         // candidate can still be removed to Trash, but its uncommitted,
         // untracked or unpushed contents must remain recoverable.
@@ -1120,6 +1409,10 @@ ipcMain.handle(
         branch = freshBranch
         deleteBranch = freshCandidacy.kind === 'ready'
       }
+
+      // Use the paths loaded from persisted records for every destructive call.
+      path = worktree.path
+      repoPath = repository.path
 
       // Present worktree: ordinary row deletes go to the system Trash and stay
       // recoverable. Explicit disk cleanup deletes outright so its promised
@@ -1139,6 +1432,11 @@ ipcMain.handle(
       // Deregister from git so no prunable "ghost" entry lingers (this also clears
       // any other already-stale worktrees in the same repo).
       if (repoPath) await pruneWorktrees(repoPath).catch(() => undefined)
+      // Record the successful Git removal before any older renderer scan can save
+      // its snapshot. The store tombstone also rejects a late stale save.
+      await worktreeStore.remove(worktree.id).catch((error) => {
+        console.error('[worktree] could not persist removed worktree', error)
+      })
       if (repoPath && deleteBranch && branch && branch !== 'HEAD') {
         const result = await deleteLocalBranch(repoPath, branch)
         if (!result.success) {
@@ -1252,12 +1550,14 @@ ipcMain.handle('get-repo-branches', async (_, path: string) => {
 })
 
 ipcMain.handle('encrypt-token', async (_, token: string) => {
-  if (!safeStorage.isEncryptionAvailable()) return token
+  if (!secureStorage.isEncryptionAvailable())
+    throw new Error('Secure credential storage is unavailable.')
   return safeStorage.encryptString(token).toString('base64')
 })
 
 ipcMain.handle('decrypt-token', async (_, encrypted: string) => {
-  if (!safeStorage.isEncryptionAvailable()) return encrypted
+  if (!secureStorage.isEncryptionAvailable())
+    throw new Error('Secure credential storage is unavailable.')
   return safeStorage.decryptString(Buffer.from(encrypted, 'base64'))
 })
 

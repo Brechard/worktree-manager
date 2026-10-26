@@ -4,10 +4,13 @@
 
 # Worktree Manager
 
-**A desktop app that makes `git worktree` usable.**
+**A desktop app to create, manage, and clean up Git worktrees across projects.**
 
-See every worktree across every repo on your machine, know at a glance which ones are
-safe to delete, and reclaim the gigabytes of `node_modules` they're quietly hoarding.
+By [ClubTidy](https://clubtidy.fr).
+
+See branches, pull requests, local changes, and cleanup candidates in one place. Create
+worktrees with a destination preview, run project setup, and reclaim regenerable disk
+space when work is done.
 
 [![CI](https://github.com/Brechard/worktree-manager/actions/workflows/ci.yml/badge.svg)](https://github.com/Brechard/worktree-manager/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -18,7 +21,7 @@ safe to delete, and reclaim the gigabytes of `node_modules` they're quietly hoar
 [Why](#why-this-exists) ·
 [Build from source](#build-from-source)
 
-<img src="docs/images/dashboard-dark.png" alt="Worktree Manager dashboard showing projects in the sidebar and each worktree's branch, pull request, and safety status" width="900" />
+<img src="docs/images/dashboard-dark.png" alt="Dark Storefront dashboard showing worktree branches, pull request numbers and titles, Publish and Push actions, and a cleanup candidate" width="900" />
 
 </div>
 
@@ -42,7 +45,7 @@ you act on the answer.
 We built it at [ClubTidy](https://clubtidy.fr) because our own worktree sprawl got out of
 hand — a dozen repos, several AI coding agents each working in their own worktree, and
 hundreds of gigabytes of dependencies. It's MIT-licensed and standalone; nothing about it
-is ClubTidy-specific.
+is [ClubTidy](https://clubtidy.fr)-specific.
 
 > Inspired by [t3code](https://github.com/pingdotgg/t3code/), rebuilt around
 > multi-repo scale, pull-request awareness, and disk reclaim.
@@ -51,13 +54,17 @@ is ClubTidy-specific.
 
 ### Know what's safe to delete
 
-Every worktree is checked against the things that actually mean "don't delete this":
-uncommitted changes, untracked files, unpushed commits, an unmerged branch, an open pull
-request. Anything that passes all five is labelled **safe** — everything else tells you
-exactly which check it failed.
+Worktree Manager checks local changes, unpushed commits, merge state, and pull-request
+information before marking a worktree ready for cleanup. When git or a configured
+provider cannot be checked, cleanup eligibility stays uncertain; an authentication
+problem shows a repair banner while any last-known PR link stays visible. After you
+confirm removal, the row clears with a brief cleaning wipe while the operation runs;
+if cleanup or deletion fails, it returns with a Retry action.
 
-The safety check fails closed. If git can't read the working tree, or the base-branch
-fetch failed so "merged" can't be trusted, the worktree is not marked safe.
+Select individual rows or **Select visible** after filtering a project, then choose
+**Remove selected** to review each worktree's changed files and local commits. Manual
+removal moves folders to Trash and keeps their branches; changing the filter clears
+selections that are no longer visible.
 
 ### See it across every repo
 
@@ -65,12 +72,23 @@ Point it at the directories you keep code in and it discovers every git reposito
 every linked worktree underneath. Filter to dirty / unmerged / unpushed / safe, sort by
 recent activity, search branches and paths, star the projects you live in.
 
+<div align="center">
+<img src="docs/images/settings-light.png" alt="Light Settings popup with General, Connections, Worktrees, and Scanning tabs over the Storefront dashboard" width="820" />
+</div>
+
 ### Pull requests inline
 
-Connect GitHub or Azure DevOps and each branch shows its PR — title, state, draft,
-merged — right on the row. It picks up an existing `gh auth` or `az` login (and the usual
-`GH_TOKEN` / `AZURE_DEVOPS_PAT` environment variables), so often there's no token to paste
-at all. Tokens you do provide are encrypted at rest via Electron's `safeStorage`.
+Connect GitHub or Azure DevOps and each branch shows its PR number, title, and state —
+including draft, open, and merged — right on the row. If authentication expires, a repair
+prompt links back to connection settings while the last known PR stays visible. In
+**Settings → Connections**, **Detect** can fill a token from an existing `gh auth` or
+`az` login or a supported environment variable such as `GH_TOKEN` or
+`AZURE_DEVOPS_PAT`. Save the detected token to use it for PR checks. Saved tokens are
+encrypted at rest via Electron's `safeStorage`.
+If the operating system key store is unavailable, saving a token fails with an
+error rather than writing it in plain text. Existing plain-text credentials are
+migrated when settings or projects are loaded; rotate any token that may have
+been copied into an older backup.
 
 ### Reclaim disk
 
@@ -82,10 +100,23 @@ directories a tool can rebuild — never "everything git ignores", which would t
 
 ### Real git actions, not just a list
 
-Merge, merge --no-ff, squash merge, rebase onto base, push, checkout, prune stale
-worktrees. Plus per-project custom action buttons: define a command once (`docker compose
-up`, `bun install`, your test suite) and run it against any worktree in a terminal or in
-the background.
+Rows surface **Publish** for an unpublished branch, **Push** for local commits, and
+**Sync** or **Rebase** when a branch needs updates. The action menu also offers merge,
+merge --no-ff, squash merge, checkout, and pruning stale worktrees. Per-project custom
+buttons can run commands such as `docker compose up`, `bun install`, or your test suite
+against a chosen worktree in a terminal or in the background.
+
+**New worktree** creates a branch or checks out an existing one from the project header.
+Choose a location beside the project, inside it, under `~/.worktree-manager`, or in a
+custom parent directory; the destination and source commit are previewed before creation.
+Set the default location in the **Settings** popup, or override it in **Project settings**.
+A project setup command can run afterward with `WORKTREE_PATH`, `WORKTREE_BRANCH`,
+`REPO_PATH`, and `REPO_NAME` in its environment. An interrupted or failed setup stays
+visible on the row with **Retry setup**.
+
+<div align="center">
+<img src="docs/images/new-worktree-light.png" alt="New worktree popup showing a branch name, four location choices, and the destination and starting commit preview" width="820" />
+</div>
 
 ### Opens where you work
 
@@ -94,7 +125,7 @@ the Rider repo opens in Rider and the TypeScript one opens in Cursor. Also opens
 terminal or a file manager at the worktree path.
 
 <div align="center">
-<img src="docs/images/dashboard-dark-2.png" alt="Worktree list showing merged, open and draft pull request states alongside safety badges" width="820" />
+<img src="docs/images/dashboard-light.png" alt="Light Storefront dashboard showing a new branch ready to Publish, merged and draft pull requests, and a branch with local edits" width="820" />
 </div>
 
 ## Install
@@ -106,7 +137,7 @@ produces the same app with no quarantine flag and no warnings.
 
 ### One command
 
-Requires [Bun](https://bun.sh) 1.3+, Node 22+ and git (Git Bash on Windows):
+Requires [Bun](https://bun.sh) 1.4.4+, Node 22+ and git (Git Bash on Windows):
 
 ```bash
 git clone https://github.com/Brechard/worktree-manager.git
@@ -119,15 +150,15 @@ Pass `--no-install` if you only want the artifact.
 
 Artifacts land in `apps/desktop/release/`:
 
-| Platform | Artifact                                       |
-| -------- | ---------------------------------------------- |
-| macOS    | `Worktree Manager-<version>-<arch>.dmg`        |
-| Windows  | `Worktree Manager Setup <version>.exe`         |
-| Linux    | `Worktree.Manager-<version>-<arch>.AppImage`   |
+| Platform | Artifact                                     |
+| -------- | -------------------------------------------- |
+| macOS    | `Worktree Manager-<version>-<arch>.dmg`      |
+| Windows  | `Worktree Manager Setup <version>.exe`       |
+| Linux    | `Worktree.Manager-<version>-<arch>.AppImage` |
 
 ### Build from source
 
-Requires [Bun](https://bun.sh) 1.3+ and Node 22+.
+Requires [Bun](https://bun.sh) 1.4.4+ and Node 22+.
 
 ```bash
 git clone https://github.com/Brechard/worktree-manager.git
@@ -151,14 +182,17 @@ cd apps/desktop && npx electron-builder --mac # or --win, --linux
 
 ## How it works
 
-Nothing leaves your machine. Worktree Manager shells out to your local `git` and reads
-the filesystem; the only network calls it ever makes are to GitHub or Azure DevOps to
-look up a pull request, and only if you connect them. There is no account, no telemetry,
-and no server.
+Worktree Manager stores projects, worktrees, settings, and cached status locally in its
+Electron user-data directory. It has no hosted account, app telemetry, or application
+server. Git operations such as fetch and push contact your configured remotes; provider
+connections request pull-request details from GitHub or Azure DevOps. Custom commands
+and project setup scripts run locally and may access the network according to what you
+configure.
 
-Settings live in the Electron user-data directory as plain JSON — provider tokens are the
-one exception and go through Electron's `safeStorage` (Keychain on macOS, DPAPI on
-Windows, libsecret on Linux).
+Settings live in the Electron user-data directory as JSON. Provider tokens use
+versioned encrypted records through Electron's `safeStorage` (Keychain on macOS,
+DPAPI on Windows, libsecret on Linux). The app decrypts them only in memory for
+provider requests and settings editing.
 
 ## Tech stack
 

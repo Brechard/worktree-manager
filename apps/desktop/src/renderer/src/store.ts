@@ -9,8 +9,10 @@ import type {
 } from '@worktree/contracts'
 
 interface AppState {
-  view: 'onboarding' | 'dashboard' | 'settings'
+  view: 'onboarding' | 'dashboard'
+  settingsSection: 'general' | 'connections' | 'worktrees' | 'scanning' | null
   settings: AppSettings | null
+  credentialRevision: number
   repositories: Repository[]
   worktrees: Worktree[]
   statuses: Record<string, WorktreeStatus>
@@ -19,9 +21,12 @@ interface AppState {
   scanProgress: ScanProgress | null
   selectedRepositoryId: string | null
   setView: (view: AppState['view']) => void
+  openSettings: (section?: Exclude<AppState['settingsSection'], null>) => void
+  closeSettings: () => void
   setSettings: (settings: AppSettings) => void
   setRepositories: (repositories: Repository[]) => void
   setWorktrees: (worktrees: Worktree[]) => void
+  upsertWorktree: (worktree: Worktree) => void
   setStatuses: (statuses: WorktreeStatus[], scopeWorktreeIds?: string[]) => void
   setStatus: (worktreeId: string, status: WorktreeStatus) => void
   removeStatuses: (worktreeIds: string[]) => void
@@ -35,7 +40,9 @@ interface AppState {
 
 export const useAppStore = create<AppState>((set, get) => ({
   view: 'onboarding',
+  settingsSection: null,
   settings: null,
+  credentialRevision: 0,
   repositories: [],
   worktrees: [],
   statuses: {},
@@ -44,9 +51,28 @@ export const useAppStore = create<AppState>((set, get) => ({
   selectedRepositoryId: null,
 
   setView: (view) => set({ view }),
-  setSettings: (settings) => set({ settings }),
+  openSettings: (section = 'general') => set({ settingsSection: section }),
+  closeSettings: () => set({ settingsSection: null }),
+  setSettings: (settings) =>
+    set((state) => ({
+      settings,
+      credentialRevision:
+        state.settings &&
+        (state.settings.githubToken !== settings.githubToken ||
+          state.settings.azureToken !== settings.azureToken)
+          ? state.credentialRevision + 1
+          : state.credentialRevision,
+    })),
   setRepositories: (repositories) => set({ repositories }),
   setWorktrees: (worktrees) => set({ worktrees }),
+  upsertWorktree: (worktree) =>
+    set((state) => {
+      const index = state.worktrees.findIndex((item) => item.id === worktree.id)
+      if (index < 0) return { worktrees: [...state.worktrees, worktree] }
+      const next = [...state.worktrees]
+      next[index] = worktree
+      return { worktrees: next }
+    }),
   // `scopeWorktreeIds` is the set of worktrees the caller actually asked about.
   // Statuses outside it are left alone, so refreshing one project never blanks
   // out the rows of a project that is mid-refresh in another tab of the UI.

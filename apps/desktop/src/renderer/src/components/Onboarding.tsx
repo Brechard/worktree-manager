@@ -4,10 +4,11 @@ import type { ScanResult, ScanProgress } from '@worktree/contracts'
 import { api } from '../api'
 import { useAppStore } from '../store'
 import { mergeDiscoveredRepository } from '../lib/repositories'
-import { cn } from '../lib/utils'
 import { shortenPath } from '../lib/paths'
 import { TitleBar } from './TitleBar'
 import { Loading } from './Loading'
+import { CleaningArtwork } from './CleaningArtwork'
+import { Button, IconButton } from './ui/Button'
 
 export function Onboarding() {
   const [roots, setRoots] = useState<string[]>([])
@@ -78,6 +79,8 @@ export function Onboarding() {
       watchedDirectories: Array.from(new Set([...(settings?.watchedDirectories ?? []), ...roots])),
       excludedPaths: settings?.excludedPaths ?? [],
       defaultEditor: settings?.defaultEditor ?? 'cursor',
+      defaultWorktreeLocation: settings?.defaultWorktreeLocation ?? 'sibling',
+      includeAgentWorktrees: settings?.includeAgentWorktrees ?? false,
       theme: settings?.theme ?? 'system',
       ...(settings?.defaultTerminal ? { defaultTerminal: settings.defaultTerminal } : {}),
       ...(settings?.githubToken ? { githubToken: settings.githubToken } : {}),
@@ -105,20 +108,26 @@ export function Onboarding() {
         title="Welcome"
         trailing={
           repositories.length > 0 ? (
-            <button
-              type="button"
-              onClick={() => setView('dashboard')}
-              className="rounded-md border border-border bg-background px-2.5 py-1.5 text-xs font-medium hover:bg-accent"
-            >
+            <Button size="compact" onClick={() => setView('dashboard')}>
               Back to dashboard
-            </button>
+            </Button>
           ) : null
         }
       />
 
       <div className="flex flex-1 items-start justify-center overflow-auto p-8">
         <div className="w-full max-w-2xl rounded-2xl border border-border bg-card p-8 shadow-sm">
-          <h1 className="mb-2 text-2xl font-semibold tracking-tight">Find your repositories</h1>
+          <div className="mb-5 flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-widest text-primary">
+                  Worktree Manager
+                </p>
+                <h1 className="text-2xl font-semibold tracking-tight">Find your repositories</h1>
+              </div>
+            </div>
+            <CleaningArtwork className="hidden w-28 shrink-0 sm:block" />
+          </div>
           <p className="mb-6 text-sm text-muted">
             Pick folders to scan. We discover git repos and every linked worktree under them.
           </p>
@@ -126,14 +135,10 @@ export function Onboarding() {
           <div className="mb-6 space-y-3">
             <div className="flex items-center gap-2">
               <h2 className="text-sm font-medium">Scan roots</h2>
-              <button
-                type="button"
-                onClick={addRoot}
-                className="inline-flex items-center gap-1 rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:opacity-90"
-              >
+              <Button variant="primary" size="compact" onClick={addRoot}>
                 <FolderPlus className="h-4 w-4" />
                 Add folder
-              </button>
+              </Button>
             </div>
 
             {roots.length === 0 && <p className="text-sm text-muted">No folders selected yet.</p>}
@@ -147,14 +152,14 @@ export function Onboarding() {
                   <span className="truncate font-mono text-xs" title={root}>
                     {shortenPath(root)}
                   </span>
-                  <button
-                    type="button"
+                  <IconButton
+                    size="compact"
+                    variant="quiet"
                     onClick={() => removeRoot(i)}
                     aria-label="Remove root"
-                    className="text-muted hover:text-destructive"
                   >
                     <X className="h-4 w-4" />
-                  </button>
+                  </IconButton>
                 </li>
               ))}
             </ul>
@@ -228,16 +233,11 @@ export function Onboarding() {
           )}
 
           <div className="flex items-center justify-end gap-3">
-            <button
-              type="button"
+            <Button
+              variant="primary"
               onClick={startScan}
-              disabled={roots.length === 0 || scanning}
-              className={cn(
-                'inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm font-medium',
-                roots.length === 0 || scanning
-                  ? 'bg-muted text-foreground'
-                  : 'bg-primary text-primary-foreground hover:opacity-90'
-              )}
+              disabled={roots.length === 0}
+              loading={scanning}
             >
               {scanning ? (
                 <>
@@ -250,17 +250,16 @@ export function Onboarding() {
                   Scan
                 </>
               )}
-            </button>
+            </Button>
 
             {scanResult && (
-              <button
-                type="button"
+              <Button
+                variant="primary"
                 onClick={importSelected}
                 disabled={selectedRepoIds.size === 0}
-                className="inline-flex items-center gap-2 rounded-md bg-success px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
               >
                 Import {selectedRepoIds.size} repo{selectedRepoIds.size === 1 ? '' : 's'}
-              </button>
+              </Button>
             )}
           </div>
         </div>

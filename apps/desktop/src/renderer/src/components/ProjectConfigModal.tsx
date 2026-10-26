@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useRef, useState, type ChangeEvent, type MouseEvent } from 'react'
+import { useEffect, useReducer, useRef, useState, type ChangeEvent, type ReactNode } from 'react'
 import {
   AlertTriangle,
   Image as ImageIcon,
@@ -8,19 +8,40 @@ import {
   Sparkles,
   X,
 } from 'lucide-react'
-import type { ProjectAction, ProviderConfig, Repository } from '@worktree/contracts'
+import type {
+  ProjectAction,
+  ProviderConfig,
+  Repository,
+  WorktreeLocation,
+} from '@worktree/contracts'
 import { useAppStore } from '../store'
 import { api } from '../api'
 import { ACTION_ICONS, ACTION_ICON_OPTIONS } from '../lib/actionIcons'
 import { editorLabel, editorOptionsForIds, sortEditorOptions, shortenPath } from '../lib/paths'
 import { cn } from '../lib/utils'
 import { ShellEditor } from './ShellEditor'
+import { WorktreeLocationSection, PostCreateSetupSection } from './CreationSettingsSection'
+import { Dialog } from './ui/Dialog'
+import { Button, IconButton } from './ui/Button'
+import { Field, TextInput, Select } from './ui/Field'
+import { UnsavedChangesDialog } from './ui/UnsavedChangesDialog'
+import { SettingsTabs } from './ui/SettingsTabs'
+
+export type ProjectConfigSection = 'general' | 'connection' | 'worktrees' | 'automation'
 
 interface ProjectConfigModalProps {
   repository: Repository
+  initialSection?: ProjectConfigSection
   onClose: () => void
-  onSave: (repo: Repository) => void
+  onSave: (repo: Repository) => Promise<void>
 }
+
+const sectionTabs: { id: ProjectConfigSection; label: string }[] = [
+  { id: 'general', label: 'General' },
+  { id: 'connection', label: 'Connection' },
+  { id: 'worktrees', label: 'Worktrees' },
+  { id: 'automation', label: 'Automation' },
+]
 
 type ProviderState = {
   type: ProviderConfig['type'] | ''
@@ -54,34 +75,73 @@ function providerReducer(state: ProviderState, action: ProviderAction): Provider
   }
 }
 
-export function ProjectConfigModal({ repository, onClose, onSave }: ProjectConfigModalProps) {
-  const settings = useAppStore((s) => s.settings)
-  const [baseBranch, setBaseBranch] = useState(repository.baseBranch || 'main')
-  const [branches, setBranches] = useState<string[]>([])
-  const [defaultBranch, setDefaultBranch] = useState<string | undefined>(undefined)
-  const [loadingBranches, setLoadingBranches] = useState(false)
-  const [preferredEditor, setPreferredEditor] = useState(repository.preferredEditor ?? '')
-  const [availableEditorIds, setAvailableEditorIds] = useState<string[] | null>(null)
-  const [favorite, setFavorite] = useState(Boolean(repository.favorite))
-  const [provider, dispatchProvider] = useReducer(
-    providerReducer,
-    initialProviderState(repository.provider)
-  )
-  const providerSourceRef = useRef(repository.provider?.source ?? 'manual')
-  const [detecting, setDetecting] = useState(false)
-  const [tokenHint, setTokenHint] = useState<string | null>(null)
-  const [autoNote, setAutoNote] = useState<string | null>(null)
-  const [imageUrl, setImageUrl] = useState(repository.imageUrl ?? '')
-  const [workingSubdirectory, setWorkingSubdirectory] = useState(
-    repository.workingSubdirectory ?? ''
-  )
-  const [actions, setActions] = useState<ProjectAction[]>(repository.actions ?? [])
-  const [preDeleteCommand, setPreDeleteCommand] = useState(repository.preDeleteCommand ?? '')
-  const [preDeleteTimeout, setPreDeleteTimeout] = useState(
-    repository.preDeleteTimeoutSeconds ? String(repository.preDeleteTimeoutSeconds) : ''
-  )
-  const fileInputRef = useRef<HTMLInputElement>(null)
+interface ProjectDraft {
+  baseBranch: string
+  preferredEditor: string
+  favorite: boolean
+  provider: ProviderState
+  currentSource: NonNullable<ProviderConfig['source']>
+  imageUrl: string
+  workingSubdirectory: string
+  actions: ProjectAction[]
+  preDeleteCommand: string
+  preDeleteTimeout: string
+  worktreeLocation: WorktreeLocation | ''
+  worktreeCustomParent: string
+  postCreateCommand: string
+  postCreateTimeout: string
+}
 
+// The detected default branch is auto-adopted on open and is not an edit.
+function projectDraftChanged(
+  repository: Repository,
+  defaultBranch: string | undefined,
+  draft: ProjectDraft
+): boolean {
+  const {
+    baseBranch,
+    preferredEditor,
+    favorite,
+    provider,
+    currentSource,
+    imageUrl,
+    workingSubdirectory,
+    actions,
+    preDeleteCommand,
+    preDeleteTimeout,
+    worktreeLocation,
+    worktreeCustomParent,
+    postCreateCommand,
+    postCreateTimeout,
+  } = draft
+  const initialBase = repository.baseBranch || defaultBranch || 'main'
+  const savedSource = repository.provider?.source ?? 'manual'
+  return (
+    baseBranch !== initialBase ||
+    (preferredEditor || '') !== (repository.preferredEditor || '') ||
+    favorite !== Boolean(repository.favorite) ||
+    (provider.type || '') !== (repository.provider?.type || '') ||
+    (provider.organization || '') !== (repository.provider?.organization || '') ||
+    (provider.project || '') !== (repository.provider?.project || '') ||
+    (provider.repoName || '') !== (repository.provider?.repository || '') ||
+    (provider.token || '') !== (repository.provider?.personalAccessToken || '') ||
+    currentSource !== savedSource ||
+    (imageUrl || '') !== (repository.imageUrl || '') ||
+    (workingSubdirectory || '') !== (repository.workingSubdirectory || '') ||
+    JSON.stringify(actions) !== JSON.stringify(repository.actions ?? []) ||
+    (preDeleteCommand || '') !== (repository.preDeleteCommand || '') ||
+    (preDeleteTimeout || '') !==
+      (repository.preDeleteTimeoutSeconds ? String(repository.preDeleteTimeoutSeconds) : '') ||
+    worktreeLocation !== (repository.worktreeLocation ?? '') ||
+    worktreeCustomParent !== (repository.worktreeCustomParent ?? '') ||
+    postCreateCommand !== (repository.postCreateCommand ?? '') ||
+    postCreateTimeout !==
+      (repository.postCreateTimeoutSeconds ? String(repository.postCreateTimeoutSeconds) : '')
+  )
+}
+
+function useAvailableEditors() {
+  const [availableEditorIds, setAvailableEditorIds] = useState<string[] | null>(null)
   useEffect(() => {
     let cancelled = false
     api
@@ -97,14 +157,48 @@ export function ProjectConfigModal({ repository, onClose, onSave }: ProjectConfi
     }
   }, [])
 
-  const editorOptions = sortEditorOptions(
-    editorOptionsForIds(availableEditorIds, [
-      preferredEditor,
-      repository.preferredEditor,
-      settings?.defaultEditor,
-    ])
-  )
+  return availableEditorIds
+}
 
+function useProjectBranches(repository: Repository) {
+  const [baseBranch, setBaseBranch] = useState(repository.baseBranch || 'main')
+  const [branches, setBranches] = useState<string[]>([])
+  const [defaultBranch, setDefaultBranch] = useState<string | undefined>(undefined)
+  const [loadingBranches, setLoadingBranches] = useState(false)
+  // Load the repo's branches so the base branch is a dropdown, defaulting to the
+  // branch `origin/HEAD` points at rather than a free-text guess.
+  useEffect(() => {
+    let cancelled = false
+    setLoadingBranches(true)
+    api
+      .getRepoBranches(repository.path)
+      .then(({ branches: list, defaultBranch: detected }) => {
+        if (cancelled) return
+        setBranches(list)
+        setDefaultBranch(detected)
+        // If this repo was never explicitly configured, adopt the detected default.
+        if (detected && !repository.baseBranch) setBaseBranch(detected)
+      })
+      .catch(() => {
+        // leave the free-text fallback in place
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingBranches(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [repository.path, repository.baseBranch])
+
+  return { baseBranch, setBaseBranch, branches, defaultBranch, loadingBranches }
+}
+
+function useAutoProvider(
+  repository: Repository,
+  dispatchProvider: (action: ProviderAction) => void,
+  providerSourceRef: { current: string }
+) {
+  const [autoNote, setAutoNote] = useState<string | null>(null)
   // Auto-fill from remote on open if missing
   useEffect(() => {
     let cancelled = false
@@ -144,33 +238,85 @@ export function ProjectConfigModal({ repository, onClose, onSave }: ProjectConfi
     return () => {
       cancelled = true
     }
-  }, [repository.remoteUrl, repository.provider])
+  }, [repository.remoteUrl, repository.provider, dispatchProvider, providerSourceRef])
 
-  // Load the repo's branches so the base branch is a dropdown, defaulting to the
-  // branch `origin/HEAD` points at rather than a free-text guess.
-  useEffect(() => {
-    let cancelled = false
-    setLoadingBranches(true)
-    api
-      .getRepoBranches(repository.path)
-      .then(({ branches: list, defaultBranch: detected }) => {
-        if (cancelled) return
-        setBranches(list)
-        setDefaultBranch(detected)
-        // If this repo was never explicitly configured, adopt the detected default.
-        if (detected && !repository.baseBranch) setBaseBranch(detected)
-      })
-      .catch(() => {
-        // leave the free-text fallback in place
-      })
-      .finally(() => {
-        if (!cancelled) setLoadingBranches(false)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [repository.path, repository.baseBranch])
+  return autoNote
+}
 
+function updatedRepository(repository: Repository, draft: ProjectDraft): Repository {
+  const {
+    baseBranch,
+    preferredEditor,
+    favorite,
+    provider,
+    currentSource,
+    imageUrl,
+    workingSubdirectory,
+    actions,
+    preDeleteCommand,
+    preDeleteTimeout,
+    worktreeLocation,
+    worktreeCustomParent,
+    postCreateCommand,
+    postCreateTimeout,
+  } = draft
+  const providerConfig: ProviderConfig | undefined = provider.type
+    ? {
+        type: provider.type,
+        organization: provider.organization || undefined,
+        project: provider.project || undefined,
+        repository: provider.repoName || repository.name,
+        personalAccessToken: provider.token || undefined,
+        source: currentSource,
+      }
+    : undefined
+
+  const timeoutSeconds = Number(preDeleteTimeout)
+  const createTimeoutSeconds = Number(postCreateTimeout)
+  // `clubtidy`, `./clubtidy` and `clubtidy/` all mean the same folder.
+  const subdirectory = workingSubdirectory
+    .trim()
+    .replace(/^\.\//, '')
+    .replace(/^\/+|\/+$/g, '')
+  // A half-typed action (no command) would render as a button that does
+  // nothing, so it never reaches the row.
+  const cleanedActions = actions
+    .map((action) => ({
+      ...action,
+      label: action.label.trim() || 'Run',
+      command: action.command.trim(),
+    }))
+    .filter((action) => action.command.length > 0)
+
+  return {
+    ...repository,
+    baseBranch,
+    favorite,
+    preferredEditor: preferredEditor || undefined,
+    imageUrl: imageUrl || undefined,
+    workingSubdirectory: subdirectory || undefined,
+    actions: cleanedActions,
+    provider: providerConfig,
+    preDeleteCommand: preDeleteCommand.trim() || undefined,
+    preDeleteTimeoutSeconds:
+      Number.isFinite(timeoutSeconds) && timeoutSeconds > 0 ? timeoutSeconds : undefined,
+    worktreeLocation: worktreeLocation || undefined,
+    worktreeCustomParent:
+      worktreeLocation === 'custom' ? worktreeCustomParent.trim() || undefined : undefined,
+    postCreateCommand: postCreateCommand.trim() || undefined,
+    postCreateTimeoutSeconds:
+      Number.isFinite(createTimeoutSeconds) && createTimeoutSeconds > 0
+        ? createTimeoutSeconds
+        : undefined,
+  }
+}
+
+function useProviderToken(
+  provider: ProviderState,
+  dispatchProvider: (action: ProviderAction) => void
+) {
+  const [detecting, setDetecting] = useState(false)
+  const [tokenHint, setTokenHint] = useState<string | null>(null)
   const detectToken = async () => {
     if (!provider.type) return
     setDetecting(true)
@@ -192,6 +338,81 @@ export function ProjectConfigModal({ repository, onClose, onSave }: ProjectConfi
     }
   }
 
+  return { detecting, tokenHint, detectToken }
+}
+
+export function ProjectConfigModal({
+  repository,
+  initialSection = 'general',
+  onClose,
+  onSave,
+}: ProjectConfigModalProps) {
+  const [section, setSection] = useState<ProjectConfigSection>(initialSection)
+  const [showUnsaved, setShowUnsaved] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
+  const settings = useAppStore((s) => s.settings)
+  const statuses = useAppStore((s) => s.statuses)
+  const worktrees = useAppStore((s) => s.worktrees)
+  const { baseBranch, setBaseBranch, branches, defaultBranch, loadingBranches } =
+    useProjectBranches(repository)
+  const [preferredEditor, setPreferredEditor] = useState(repository.preferredEditor ?? '')
+  const availableEditorIds = useAvailableEditors()
+  const [favorite, setFavorite] = useState(Boolean(repository.favorite))
+  const [provider, dispatchProvider] = useReducer(
+    providerReducer,
+    initialProviderState(repository.provider)
+  )
+  const providerSourceRef = useRef(repository.provider?.source ?? 'manual')
+  const projectIds = new Set(
+    worktrees.filter((w) => w.repositoryId === repository.id).map((w) => w.id)
+  )
+  const projectLookups = Object.values(statuses)
+    .filter((status) => projectIds.has(status.worktreeId))
+    .map((status) => status.prLookup)
+    .filter((lookup) => lookup && lookup.state !== 'not-applicable')
+  const lastSuccessfulCheck = Math.max(
+    0,
+    ...projectLookups.map(
+      (lookup) =>
+        lookup?.lastSuccessAt ??
+        (lookup?.state === 'found' || lookup?.state === 'none' ? lookup.checkedAt : 0)
+    )
+  )
+  const lookupCredentialSource = projectLookups.find(
+    (lookup) => lookup?.credentialSource && lookup.credentialSource !== 'none'
+  )?.credentialSource
+  const { detecting, tokenHint, detectToken } = useProviderToken(provider, dispatchProvider)
+  const autoNote = useAutoProvider(repository, dispatchProvider, providerSourceRef)
+  const [imageUrl, setImageUrl] = useState(repository.imageUrl ?? '')
+  const [workingSubdirectory, setWorkingSubdirectory] = useState(
+    repository.workingSubdirectory ?? ''
+  )
+  const [actions, setActions] = useState<ProjectAction[]>(repository.actions ?? [])
+  const [preDeleteCommand, setPreDeleteCommand] = useState(repository.preDeleteCommand ?? '')
+  const [preDeleteTimeout, setPreDeleteTimeout] = useState(
+    repository.preDeleteTimeoutSeconds ? String(repository.preDeleteTimeoutSeconds) : ''
+  )
+  const [worktreeLocation, setWorktreeLocation] = useState<WorktreeLocation | ''>(
+    repository.worktreeLocation ?? ''
+  )
+  const [worktreeCustomParent, setWorktreeCustomParent] = useState(
+    repository.worktreeCustomParent ?? ''
+  )
+  const [postCreateCommand, setPostCreateCommand] = useState(repository.postCreateCommand ?? '')
+  const [postCreateTimeout, setPostCreateTimeout] = useState(
+    repository.postCreateTimeoutSeconds ? String(repository.postCreateTimeoutSeconds) : ''
+  )
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const editorOptions = sortEditorOptions(
+    editorOptionsForIds(availableEditorIds, [
+      preferredEditor,
+      repository.preferredEditor,
+      settings?.defaultEditor,
+    ])
+  )
+
   const handleImageFile = (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
@@ -200,73 +421,43 @@ export function ProjectConfigModal({ repository, onClose, onSave }: ProjectConfi
     reader.readAsDataURL(file)
   }
 
-  // Consider the form "clean" if it still matches the saved repository (the
-  // detected default branch is auto-adopted on open and doesn't count as a change).
-  const initialBase = repository.baseBranch || defaultBranch || 'main'
   const currentSource = providerSourceRef.current ?? 'manual'
-  const savedSource = repository.provider?.source ?? 'manual'
-  const isDirty =
-    baseBranch !== initialBase ||
-    (preferredEditor || '') !== (repository.preferredEditor || '') ||
-    favorite !== Boolean(repository.favorite) ||
-    (provider.type || '') !== (repository.provider?.type || '') ||
-    (provider.organization || '') !== (repository.provider?.organization || '') ||
-    (provider.project || '') !== (repository.provider?.project || '') ||
-    (provider.repoName || '') !== (repository.provider?.repository || '') ||
-    (provider.token || '') !== (repository.provider?.personalAccessToken || '') ||
-    currentSource !== savedSource ||
-    (imageUrl || '') !== (repository.imageUrl || '') ||
-    (workingSubdirectory || '') !== (repository.workingSubdirectory || '') ||
-    JSON.stringify(actions) !== JSON.stringify(repository.actions ?? []) ||
-    (preDeleteCommand || '') !== (repository.preDeleteCommand || '') ||
-    (preDeleteTimeout || '') !==
-      (repository.preDeleteTimeoutSeconds ? String(repository.preDeleteTimeoutSeconds) : '')
-
-  const handleBackdropMouseDown = (e: MouseEvent) => {
-    if (e.target === e.currentTarget && !isDirty) onClose()
+  const draft: ProjectDraft = {
+    baseBranch,
+    preferredEditor,
+    favorite,
+    provider,
+    currentSource,
+    imageUrl,
+    workingSubdirectory,
+    actions,
+    preDeleteCommand,
+    preDeleteTimeout,
+    worktreeLocation,
+    worktreeCustomParent,
+    postCreateCommand,
+    postCreateTimeout,
   }
 
-  const handleSave = () => {
-    const providerConfig: ProviderConfig | undefined = provider.type
-      ? {
-          type: provider.type,
-          organization: provider.organization || undefined,
-          project: provider.project || undefined,
-          repository: provider.repoName || repository.name,
-          personalAccessToken: provider.token || undefined,
-          source: currentSource,
-        }
-      : undefined
+  const isDirty = projectDraftChanged(repository, defaultBranch, draft)
 
-    const timeoutSeconds = Number(preDeleteTimeout)
-    // `clubtidy`, `./clubtidy` and `clubtidy/` all mean the same folder.
-    const subdirectory = workingSubdirectory
-      .trim()
-      .replace(/^\.\//, '')
-      .replace(/^\/+|\/+$/g, '')
-    // A half-typed action (no command) would render as a button that does
-    // nothing, so it never reaches the row.
-    const cleanedActions = actions
-      .map((action) => ({
-        ...action,
-        label: action.label.trim() || 'Run',
-        command: action.command.trim(),
-      }))
-      .filter((action) => action.command.length > 0)
+  const handleSave = async () => {
+    if (saving) return
+    setSaving(true)
+    setSaveError(null)
+    try {
+      await onSave(updatedRepository(repository, draft))
+    } catch (error) {
+      setSaveError(`Could not save project settings: ${String(error)}`)
+    } finally {
+      setSaving(false)
+    }
+  }
 
-    onSave({
-      ...repository,
-      baseBranch,
-      favorite,
-      preferredEditor: preferredEditor || undefined,
-      imageUrl: imageUrl || undefined,
-      workingSubdirectory: subdirectory || undefined,
-      actions: cleanedActions,
-      provider: providerConfig,
-      preDeleteCommand: preDeleteCommand.trim() || undefined,
-      preDeleteTimeoutSeconds:
-        Number.isFinite(timeoutSeconds) && timeoutSeconds > 0 ? timeoutSeconds : undefined,
-    })
+  const requestClose = () => {
+    if (saving) return
+    if (isDirty) setShowUnsaved(true)
+    else onClose()
   }
 
   const markManual = () => {
@@ -274,96 +465,191 @@ export function ProjectConfigModal({ repository, onClose, onSave }: ProjectConfi
   }
 
   return (
-    <div className="fixed inset-0 z-50">
-      <button
-        type="button"
-        className="absolute inset-0 bg-black/50"
-        onClick={handleBackdropMouseDown}
-        aria-label="Close dialog"
+    <ProjectConfigShell
+      repositoryName={repository.name}
+      section={section}
+      setSection={setSection}
+      requestClose={requestClose}
+      saving={saving}
+      saveError={saveError}
+      showUnsaved={showUnsaved}
+      setShowUnsaved={setShowUnsaved}
+      onClose={onClose}
+      handleSave={handleSave}
+    >
+      <ProjectConfigPanel
+        section={section}
+        general={{
+          baseBranch,
+          setBaseBranch,
+          workingSubdirectory,
+          setWorkingSubdirectory,
+          branches,
+          defaultBranch,
+          loadingBranches,
+          preferredEditor,
+          editorOptions,
+          setPreferredEditor,
+          favorite,
+          setFavorite,
+          imageUrl,
+          setImageUrl,
+          fileInputRef,
+          handleImageFile,
+        }}
+        connection={{
+          repository,
+          provider,
+          lastSuccessfulCheck,
+          currentSource: lookupCredentialSource,
+          dispatchProvider,
+          markManual,
+          autoNote,
+          tokenHint,
+          detecting,
+          detectToken,
+          loadingBranches,
+          defaultBranch,
+        }}
+        worktrees={{
+          location: worktreeLocation,
+          setLocation: setWorktreeLocation,
+          customParent: worktreeCustomParent,
+          setCustomParent: setWorktreeCustomParent,
+        }}
+        postCreate={{
+          command: postCreateCommand,
+          setCommand: setPostCreateCommand,
+          timeout: postCreateTimeout,
+          setTimeout: setPostCreateTimeout,
+        }}
+        actions={{ actions, setActions, workingSubdirectory }}
+        cleanup={{ preDeleteCommand, setPreDeleteCommand, preDeleteTimeout, setPreDeleteTimeout }}
       />
-      <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-4">
-        {/* Header and footer are pinned and only the middle scrolls, so Save is
-            reachable from anywhere in a form this tall. */}
-        <div className="pointer-events-auto flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-lg">
-          <div className="flex shrink-0 items-center justify-between border-b border-border px-6 py-4">
-            <div>
-              <h2 className="text-lg font-semibold">Project settings</h2>
-              <p className="text-xs text-muted">{repository.name}</p>
-            </div>
-            <button
-              type="button"
-              onClick={onClose}
-              className="text-muted hover:text-foreground"
-              aria-label="Close"
-            >
-              <X className="h-5 w-5" />
-            </button>
+    </ProjectConfigShell>
+  )
+}
+
+interface ProjectConfigShellProps {
+  repositoryName: string
+  section: ProjectConfigSection
+  setSection: (section: ProjectConfigSection) => void
+  requestClose: () => void
+  saving: boolean
+  saveError: string | null
+  showUnsaved: boolean
+  setShowUnsaved: (value: boolean) => void
+  onClose: () => void
+  handleSave: () => Promise<void>
+  children: ReactNode
+}
+
+function ProjectConfigShell({
+  repositoryName,
+  section,
+  setSection,
+  requestClose,
+  saving,
+  saveError,
+  showUnsaved,
+  setShowUnsaved,
+  onClose,
+  handleSave,
+  children,
+}: ProjectConfigShellProps) {
+  return (
+    <Dialog
+      titleId="project-settings-title"
+      onClose={requestClose}
+      canClose={!saving}
+      size="wide"
+      initialFocus={`#project-tab-${section}`}
+    >
+      <div className="flex max-h-[90vh] flex-col overflow-hidden">
+        <div className="flex shrink-0 items-center justify-between border-b border-border px-6 py-4">
+          <div>
+            <h2 id="project-settings-title" className="text-lg font-semibold">
+              Project settings
+            </h2>
+            <p className="text-xs text-muted">{repositoryName}</p>
           </div>
-
-          <div className="min-h-0 flex-1 space-y-5 overflow-auto px-6 py-5">
-            <ActionsSection
-              actions={actions}
-              setActions={setActions}
-              workingSubdirectory={workingSubdirectory}
-            />
-
-            <CleanupSection
-              preDeleteCommand={preDeleteCommand}
-              setPreDeleteCommand={setPreDeleteCommand}
-              preDeleteTimeout={preDeleteTimeout}
-              setPreDeleteTimeout={setPreDeleteTimeout}
-            />
-
-            <GeneralSection
-              baseBranch={baseBranch}
-              setBaseBranch={setBaseBranch}
-              workingSubdirectory={workingSubdirectory}
-              setWorkingSubdirectory={setWorkingSubdirectory}
-              branches={branches}
-              defaultBranch={defaultBranch}
-              loadingBranches={loadingBranches}
-              preferredEditor={preferredEditor}
-              editorOptions={editorOptions}
-              setPreferredEditor={setPreferredEditor}
-              favorite={favorite}
-              setFavorite={setFavorite}
-              imageUrl={imageUrl}
-              setImageUrl={setImageUrl}
-              fileInputRef={fileInputRef}
-              handleImageFile={handleImageFile}
-            />
-
-            <ProviderSection
-              repository={repository}
-              provider={provider}
-              dispatchProvider={dispatchProvider}
-              markManual={markManual}
-              autoNote={autoNote}
-              tokenHint={tokenHint}
-              detecting={detecting}
-              detectToken={detectToken}
-              loadingBranches={loadingBranches}
-              defaultBranch={defaultBranch}
-            />
-          </div>
-
-          <div className="flex shrink-0 justify-end gap-2 border-t border-border px-6 py-4">
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded-md border border-border bg-background px-4 py-2 text-sm font-medium hover:bg-accent"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              onClick={handleSave}
-              className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
-            >
-              Save
-            </button>
-          </div>
+          <IconButton onClick={requestClose} variant="quiet" aria-label="Close project settings">
+            <X className="h-5 w-5" />
+          </IconButton>
         </div>
+        <SettingsTabs
+          tabs={sectionTabs}
+          section={section}
+          onChange={setSection}
+          prefix="project"
+          label="Project settings sections"
+        />
+        <div
+          id="project-panel"
+          role="tabpanel"
+          aria-labelledby={`project-tab-${section}`}
+          tabIndex={0}
+          className="min-h-0 flex-1 space-y-6 overflow-auto px-6 py-6"
+        >
+          {children}
+        </div>
+        {saveError && !showUnsaved && (
+          <p role="alert" className="px-6 pb-2 text-sm text-destructive">
+            {saveError}
+          </p>
+        )}
+        <div className="flex shrink-0 justify-end gap-2 border-t border-border px-6 py-4">
+          <Button onClick={requestClose} disabled={saving}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={() => void handleSave()} loading={saving}>
+            Save
+          </Button>
+        </div>
+      </div>
+      {showUnsaved && (
+        <UnsavedChangesDialog
+          onKeep={() => setShowUnsaved(false)}
+          onDiscard={onClose}
+          onSave={() => void handleSave()}
+          saving={saving}
+          error={saveError}
+        />
+      )}
+    </Dialog>
+  )
+}
+
+interface ProjectConfigPanelProps {
+  section: ProjectConfigSection
+  general: GeneralSectionProps
+  connection: ProviderSectionProps
+  worktrees: Parameters<typeof WorktreeLocationSection>[0]
+  postCreate: Parameters<typeof PostCreateSetupSection>[0]
+  actions: ActionsSectionProps
+  cleanup: CleanupSectionProps
+}
+
+function ProjectConfigPanel({
+  section,
+  general,
+  connection,
+  worktrees,
+  postCreate,
+  actions,
+  cleanup,
+}: ProjectConfigPanelProps) {
+  if (section === 'general') return <GeneralSection {...general} />
+  if (section === 'connection') return <ProviderSection {...connection} />
+  if (section === 'worktrees') return <WorktreeLocationSection {...worktrees} />
+  return (
+    <div className="space-y-6">
+      <PostCreateSetupSection {...postCreate} />
+      <div className="border-t border-border pt-6">
+        <ActionsSection {...actions} />
+      </div>
+      <div className="border-t border-border pt-6">
+        <CleanupSection {...cleanup} />
       </div>
     </div>
   )
@@ -409,17 +695,15 @@ function GeneralSection({
   return (
     <section className="space-y-3">
       <h3 className="text-xs font-semibold uppercase tracking-wider text-muted">General</h3>
-      <div>
-        <label htmlFor="base-branch" className="mb-1 flex items-center gap-2 text-sm font-medium">
-          Base branch
-          {loadingBranches && <Loader2 className="h-3 w-3 animate-spin text-muted" />}
-        </label>
-        <select
-          id="base-branch"
-          value={baseBranch}
-          onChange={(e) => setBaseBranch(e.target.value)}
-          className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
-        >
+      <Field
+        htmlFor="base-branch"
+        label={
+          <span className="flex items-center gap-2">
+            Base branch {loadingBranches && <Loader2 className="h-3 w-3 animate-spin text-muted" />}
+          </span>
+        }
+      >
+        <Select id="base-branch" value={baseBranch} onChange={(e) => setBaseBranch(e.target.value)}>
           {/* Keep the current value selectable even if it's not in the list. */}
           {baseBranch && !branches.includes(baseBranch) && (
             <option value={baseBranch}>{baseBranch} (not found)</option>
@@ -430,7 +714,7 @@ function GeneralSection({
               {b === defaultBranch ? ' — default' : ''}
             </option>
           ))}
-        </select>
+        </Select>
         {defaultBranch && baseBranch !== defaultBranch ? (
           <p className="mt-1 flex items-start gap-1.5 text-xs text-warning">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
@@ -446,7 +730,7 @@ function GeneralSection({
             status.
           </p>
         )}
-      </div>
+      </Field>
 
       <div>
         <label htmlFor="working-subdirectory" className="mb-1 block text-sm font-medium">
@@ -454,14 +738,14 @@ function GeneralSection({
         </label>
         <div className="flex items-center gap-2">
           <span className="shrink-0 font-mono text-xs text-muted">&lt;worktree&gt;/</span>
-          <input
+          <TextInput
             id="working-subdirectory"
             type="text"
             value={workingSubdirectory}
             onChange={(e) => setWorkingSubdirectory(e.target.value)}
-            placeholder="clubtidy"
+            placeholder="apps/web"
             spellCheck={false}
-            className="min-w-0 flex-1 rounded-md border border-border bg-background px-3 py-2 font-mono text-sm outline-none focus:border-primary"
+            className="min-w-0 flex-1 font-mono"
           />
         </div>
         <p className="mt-1 text-xs text-muted">
@@ -474,11 +758,10 @@ function GeneralSection({
         <label htmlFor="preferred-editor" className="mb-1 block text-sm font-medium">
           Editor for this project
         </label>
-        <select
+        <Select
           id="preferred-editor"
           value={preferredEditor}
           onChange={(e) => setPreferredEditor(e.target.value)}
-          className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
         >
           <option value="">App default</option>
           {editorOptions.map((opt) => (
@@ -486,7 +769,7 @@ function GeneralSection({
               {opt.label}
             </option>
           ))}
-        </select>
+        </Select>
         <p className="mt-1 text-xs text-muted">
           Also available as “Open with” on the main screen
           {preferredEditor ? ` · ${editorLabel(preferredEditor)}` : ''}.
@@ -521,13 +804,12 @@ function GeneralSection({
             </div>
           )}
           <div className="min-w-0 flex-1 space-y-2">
-            <input
+            <TextInput
               id="project-image-url"
               type="text"
               value={imageUrl}
               onChange={(e) => setImageUrl(e.target.value)}
               placeholder="https://example.com/logo.png or data URL"
-              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
             />
             <input
               ref={fileInputRef}
@@ -662,7 +944,7 @@ function ActionRow({
     <div className="space-y-2">
       <div className="flex items-center gap-2">
         <Icon className="h-4 w-4 shrink-0 text-primary" aria-hidden="true" />
-        <select
+        <Select
           aria-label="Action icon"
           value={action.icon}
           onChange={(e) => onChange({ icon: e.target.value as ProjectAction['icon'] })}
@@ -673,7 +955,7 @@ function ActionRow({
               {option.label}
             </option>
           ))}
-        </select>
+        </Select>
         <input
           type="text"
           aria-label="Button label"
@@ -682,7 +964,7 @@ function ActionRow({
           placeholder="Dev"
           className={cn(field, 'w-28 font-medium')}
         />
-        <select
+        <Select
           aria-label="Where the command runs"
           value={action.mode}
           onChange={(e) => onChange({ mode: e.target.value as ProjectAction['mode'] })}
@@ -690,7 +972,7 @@ function ActionRow({
         >
           <option value="terminal">New terminal</option>
           <option value="background">Background</option>
-        </select>
+        </Select>
         {action.mode === 'background' && (
           <label className="flex items-center gap-1 text-[11px] text-muted">
             <input
@@ -699,9 +981,16 @@ function ActionRow({
               aria-label="Timeout in seconds"
               value={action.timeoutSeconds ? String(action.timeoutSeconds) : ''}
               onChange={(e) => {
-                const seconds = Number(e.target.value)
+                const raw = e.target.value.trim()
+                const seconds = raw === '' ? undefined : Number(raw)
                 onChange({
-                  timeoutSeconds: Number.isFinite(seconds) && seconds > 0 ? seconds : undefined,
+                  timeoutSeconds:
+                    seconds !== undefined &&
+                    Number.isSafeInteger(seconds) &&
+                    seconds >= 1 &&
+                    seconds <= 86400
+                      ? seconds
+                      : undefined,
                 })
               }}
               placeholder="600"
@@ -779,12 +1068,14 @@ function CleanupSection({
 
       <ShellEditor
         id="pre-delete-command"
+        label="Cleanup command"
+        className="h-32"
         value={preDeleteCommand}
         onChange={setPreDeleteCommand}
         placeholder="Leave empty to skip"
       />
 
-      <p className="text-[11px] leading-relaxed text-muted">
+      <p className="text-xs leading-relaxed text-muted">
         Runs through your login shell, with the worktree as the working directory.{' '}
         <code className="font-mono text-warning">$WORKTREE_PATH</code>,{' '}
         <code className="font-mono text-warning">$WORKTREE_BRANCH</code>,{' '}
@@ -799,6 +1090,8 @@ function CleanupSection({
 interface ProviderSectionProps {
   repository: Repository
   provider: ProviderState
+  lastSuccessfulCheck: number
+  currentSource: string | undefined
   dispatchProvider: React.Dispatch<ProviderAction>
   markManual: () => void
   autoNote: string | null
@@ -812,6 +1105,8 @@ interface ProviderSectionProps {
 function ProviderSection({
   repository,
   provider,
+  lastSuccessfulCheck,
+  currentSource,
   dispatchProvider,
   markManual,
   autoNote,
@@ -846,18 +1141,17 @@ function ProviderSection({
         <label htmlFor="provider-type" className="mb-1 block text-sm font-medium">
           Provider
         </label>
-        <select
+        <Select
           id="provider-type"
           value={provider.type}
           onChange={(e) =>
             setProviderField({ type: e.target.value as ProviderConfig['type'] | '' })
           }
-          className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
         >
           <option value="">None</option>
           <option value="github">GitHub</option>
           <option value="azure">Azure DevOps</option>
-        </select>
+        </Select>
       </div>
 
       {provider.type === 'github' && (
@@ -866,20 +1160,19 @@ function ProviderSection({
             <label htmlFor="github-owner" className="mb-1 block text-sm font-medium">
               Owner / organization
             </label>
-            <input
+            <TextInput
               id="github-owner"
               type="text"
               value={provider.organization}
               onChange={(e) => setProviderField({ organization: e.target.value })}
               placeholder="owner"
-              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
             />
           </div>
           <div>
             <label htmlFor="github-repo" className="mb-1 block text-sm font-medium">
               Repository
             </label>
-            <input
+            <TextInput
               id="github-repo"
               type="text"
               value={
@@ -894,7 +1187,6 @@ function ProviderSection({
                 })
               }}
               placeholder="repo"
-              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
             />
           </div>
         </div>
@@ -911,24 +1203,22 @@ function ProviderSection({
               <label htmlFor="azure-organization" className="mb-1 block text-sm font-medium">
                 Organization
               </label>
-              <input
+              <TextInput
                 id="azure-organization"
                 type="text"
                 value={provider.organization}
                 onChange={(e) => setProviderField({ organization: e.target.value })}
-                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
               />
             </div>
             <div>
               <label htmlFor="azure-project" className="mb-1 block text-sm font-medium">
                 Project
               </label>
-              <input
+              <TextInput
                 id="azure-project"
                 type="text"
                 value={provider.project}
                 onChange={(e) => setProviderField({ project: e.target.value })}
-                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
               />
             </div>
           </div>
@@ -936,12 +1226,11 @@ function ProviderSection({
             <label htmlFor="azure-repo" className="mb-1 block text-sm font-medium">
               Repository
             </label>
-            <input
+            <TextInput
               id="azure-repo"
               type="text"
               value={provider.repoName}
               onChange={(e) => setProviderField({ repoName: e.target.value })}
-              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
             />
           </div>
         </div>
@@ -970,7 +1259,7 @@ function ProviderSection({
               Detect token
             </button>
           </div>
-          <input
+          <TextInput
             id="provider-token"
             type="password"
             value={provider.token}
@@ -978,11 +1267,17 @@ function ProviderSection({
             placeholder={
               provider.type === 'github' ? 'ghp_… or leave empty to use Settings' : 'Azure PAT'
             }
-            className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
           />
           {tokenHint && <p className="mt-1 text-xs text-muted">{tokenHint}</p>}
           <p className="mt-1 text-xs text-muted">
             Optional per-repo. Global tokens live in Settings and apply to all projects.
+          </p>
+          <p className="mt-2 text-xs text-muted">
+            Current connection:{' '}
+            {lastSuccessfulCheck
+              ? `last successful check ${new Date(lastSuccessfulCheck).toLocaleString()}`
+              : 'not yet checked successfully'}
+            {currentSource ? ` · ${currentSource} credential` : ''}.
           </p>
         </div>
       )}

@@ -24,9 +24,9 @@ export function mergeDiscoveredRepository(
     name: discovered.name,
     path: discovered.path,
     ...(discovered.remoteUrl ? { remoteUrl: discovered.remoteUrl } : {}),
-    // Discovery reads the repo's default branch, which is better than a stale
-    // saved value; it falls back to what was saved when detection fails.
-    baseBranch: discovered.baseBranch || previous.baseBranch,
+    // The project may deliberately track a non-default integration branch.
+    // Discovery only chooses the default for a newly added repository.
+    baseBranch: previous.baseBranch || discovered.baseBranch,
     // A token the user pasted outranks anything re-derived from the remote.
     provider: previous.provider?.personalAccessToken
       ? previous.provider

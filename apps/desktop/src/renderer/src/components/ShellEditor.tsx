@@ -167,7 +167,7 @@ function highlight(source: string): ReactNode[] {
     }
 
     if (/\s/.test(char)) {
-      const run = rest.match(/^[^\S\n]+/)![0]
+      const run = rest.match(/^[^\S\n]+/)?.[0] ?? char
       push(run)
       index += run.length
       continue
@@ -258,13 +258,21 @@ function highlight(source: string): ReactNode[] {
 
 interface ShellEditorProps {
   id: string
+  label?: string
   value: string
   onChange: (value: string) => void
   placeholder?: string
   className?: string
 }
 
-export function ShellEditor({ id, value, onChange, placeholder, className }: ShellEditorProps) {
+export function ShellEditor({
+  id,
+  label = 'Shell script',
+  value,
+  onChange,
+  placeholder,
+  className,
+}: ShellEditorProps) {
   const preRef = useRef<HTMLPreElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
@@ -309,6 +317,7 @@ export function ShellEditor({ id, value, onChange, placeholder, className }: She
       </pre>
       <textarea
         id={id}
+        aria-label={label}
         ref={textareaRef}
         value={value}
         onChange={(e) => onChange(e.target.value)}

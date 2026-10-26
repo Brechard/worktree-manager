@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
-import type { Repository, ScanProgress, Worktree } from '@worktree/contracts'
+import type { ScanProgress } from '@worktree/contracts'
 import { useAppStore } from './store'
-import { mergeDiscoveredRepository } from './lib/repositories'
+import { loadStartupData } from './lib/loadStartupData'
 import { api } from './api'
 import { Onboarding } from './components/Onboarding'
 import { Dashboard } from './components/Dashboard'
@@ -9,99 +9,83 @@ import { Loading } from './components/Loading'
 import { Settings } from './components/Settings'
 import { TitleBar } from './components/TitleBar'
 import { applyTheme } from './lib/theme'
+import { removalVisibility, removedWorktreePaths } from './lib/removalVisibility'
 
 export default function App() {
-  const { view, setView, setSettings, setRepositories, setWorktrees, setSelectedRepositoryId } =
-    useAppStore()
+  const {
+    view,
+    settingsSection,
+    setView,
+    setSettings,
+    setRepositories,
+    setWorktrees,
+    setSelectedRepositoryId,
+  } = useAppStore()
   const [bootError, setBootError] = useState<string | null>(null)
   const [ready, setReady] = useState(false)
   const [scanning, setScanning] = useState(false)
   const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null)
 
   useEffect(() => {
+    // Main owns persistence; this subscription stays mounted when the create
+    // dialog or dashboard closes, so a long-running setup remains visible.
+    return api.onWorktreeCreationProgress((progress) => {
+      const worktree = progress.worktree
+      if (!worktree) return
+      // A newly registered checkout may reuse a previously removed path.
+      if (progress.stage === 'registered') removedWorktreePaths.delete(worktree.path)
+      if (removedWorktreePaths.has(worktree.path) || removalVisibility.isPending(worktree.id))
+        return
+      useAppStore.getState().upsertWorktree(worktree)
+    })
+  }, [])
+
+  useEffect(() => {
     let cancelled = false
     let removeScanProgress: (() => void) | undefined
-    async function init() {
-      try {
-        if (!window.api) {
-          throw new Error('Electron API is not available. Restart the desktop app.')
-        }
-        const [settings, existingRepos, existingWorktrees] = await Promise.all([
-          api.getSettings(),
-          api.getRepositories(),
-          api.getWorktrees(),
-        ])
+    void loadStartupData(
+      (settings) => {
         if (cancelled) return
         applyTheme(settings.theme)
         setSettings(settings)
-
-        let repositories = existingRepos
-        let worktrees = existingWorktrees
-
-        const roots = new Set<string>()
-        for (const dir of settings?.watchedDirectories ?? []) {
-          if (dir.trim().length > 0) roots.add(dir)
+      },
+      (value) => {
+        if (!cancelled) setScanning(value)
+      },
+      () => {
+        removeScanProgress = api.onScanProgress((progress) => {
+          if (!cancelled) setScanProgress(progress)
+        })
+        return () => {
+          removeScanProgress?.()
+          removeScanProgress = undefined
         }
-        for (const r of existingRepos) {
-          if (r.path.trim().length > 0) roots.add(r.path)
-        }
-
-        if (roots.size > 0) {
-          removeScanProgress = api.onScanProgress((progress) => setScanProgress(progress))
-          setScanning(true)
-          try {
-            const result = await api.discoverWorktrees({ roots: Array.from(roots), maxDepth: 5 })
-            if (!result.cancelled) {
-              const existingByPath = new Map(existingRepos.map((r) => [r.path, r]))
-              const existingById = new Map(existingRepos.map((r) => [r.id, r]))
-              const mergedRepos: Repository[] = []
-              for (const r of result.repositories) {
-                mergedRepos.push(
-                  mergeDiscoveredRepository(r, existingByPath.get(r.path) || existingById.get(r.id))
-                )
-              }
-
-              const kept: Worktree[] = []
-              for (const w of existingWorktrees) {
-                if (!result.repositories.some((r) => r.id === w.repositoryId)) {
-                  kept.push(w)
-                }
-              }
-
-              repositories = mergedRepos
-              worktrees = [...kept, ...result.worktrees]
-              await Promise.all([api.setRepositories(repositories), api.setWorktrees(worktrees)])
-            }
-          } finally {
-            setScanning(false)
-            removeScanProgress?.()
-            removeScanProgress = undefined
-          }
-        }
-
+      },
+      () => cancelled
+    )
+      .then((data) => {
+        if (cancelled || !data) return
+        const { settings, repositories, worktrees } = data
         setRepositories(repositories)
         setWorktrees(worktrees)
-
         if (repositories.length > 0) {
           const last = settings.lastSelectedRepositoryId
-          const validLast = last && repositories.some((r) => r.id === last)
-          const firstFavorite = [...repositories]
-            .sort((a, b) => a.name.localeCompare(b.name))
-            .find((r) => r.favorite)
-          const selectedRepo = validLast
-            ? repositories.find((r) => r.id === last)!
-            : (firstFavorite ?? repositories[0]!)
+          const selectedRepo =
+            (last && repositories.find((repo) => repo.id === last)) ||
+            [...repositories]
+              .sort((a, b) => a.name.localeCompare(b.name))
+              .find((repo) => repo.favorite) ||
+            repositories[0]!
           setSelectedRepositoryId(selectedRepo.id)
           setView('dashboard')
         } else {
           setView('onboarding')
         }
         setReady(true)
-      } catch (err) {
-        if (!cancelled) setBootError(String(err))
-      }
-    }
-    init()
+      })
+      .catch((error) => {
+        if (!cancelled) setBootError(String(error))
+      })
     return () => {
       cancelled = true
       removeScanProgress?.()
@@ -142,7 +126,7 @@ export default function App() {
     <div className="flex h-screen w-screen flex-col overflow-hidden bg-background text-foreground">
       {view === 'onboarding' && <Onboarding />}
       {view === 'dashboard' && <Dashboard />}
-      {view === 'settings' && <Settings />}
+      {view === 'dashboard' && settingsSection && <Settings initialSection={settingsSection} />}
     </div>
   )
 }

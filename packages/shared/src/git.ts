@@ -39,8 +39,12 @@ export async function getGitDir(cwd: string): Promise<string | undefined> {
   return stdout || undefined
 }
 
-export async function getHeadCommit(cwd: string): Promise<string | undefined> {
-  const { stdout, exitCode } = await runGit(cwd, ['rev-parse', '--short', 'HEAD'])
+export async function getHeadCommit(cwd: string, full = false): Promise<string | undefined> {
+  const { stdout, exitCode } = await runGit(cwd, [
+    'rev-parse',
+    ...(full ? [] : ['--short']),
+    'HEAD',
+  ])
   if (exitCode !== 0) return undefined
   return stdout || undefined
 }
@@ -245,6 +249,28 @@ export async function isMerged(
       : `refs/heads/${resolvedBase}`
   const { exitCode } = await runGit(cwd, ['merge-base', '--is-ancestor', 'HEAD', baseRef])
   return exitCode === 0
+}
+
+/** A commit recorded on this local branch that is still in its current
+ * history. A newly created branch at the base has ancestry but no evidence
+ * that any branch work was ever completed. Reflogs may expire, so absence is
+ * deliberately an unknown/negative answer for cleanup suggestions. */
+export async function hasBranchCommitHistory(cwd: string, branch: string): Promise<boolean> {
+  if (branch === 'HEAD') return false
+  const { stdout, exitCode } = await runGit(cwd, [
+    'reflog',
+    'show',
+    '--format=%H%x09%gs',
+    `refs/heads/${branch}`,
+  ])
+  if (exitCode !== 0) return false
+  for (const line of stdout.split('\n')) {
+    const [commit, subject] = line.split('\t', 2)
+    if (!commit || !/^commit(?: \([^)]*\))?:/.test(subject ?? '')) continue
+    const reachable = await runGit(cwd, ['merge-base', '--is-ancestor', commit, 'HEAD'])
+    if (reachable.exitCode === 0) return true
+  }
+  return false
 }
 
 export async function getAheadBehind(

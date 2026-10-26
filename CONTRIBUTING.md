@@ -4,7 +4,7 @@ Thanks for taking a look. Issues, bug reports and pull requests are all welcome.
 
 ## Getting set up
 
-Requires [Bun](https://bun.sh) 1.3+ and Node 22+.
+Requires [Bun](https://bun.sh) 1.4.4+ and Node 22+.
 
 ```bash
 bun install
@@ -21,11 +21,12 @@ bun dev
 ## Before opening a pull request
 
 ```bash
-bun run typecheck && bun run format && bun run build
+bun run format && bun run typecheck && bun run build && bun run test
 ```
 
-CI runs the same three (with `format:check` instead of `format`), so a green local run
-means a green PR.
+CI runs formatting checks, typechecking, the build, and the test suite. `bun run test`
+builds workspace packages first, then runs every `*.test.*` and `*.spec.*` file with
+Bun's native test runner; it fails if no test files are found.
 
 ## How the code is laid out
 

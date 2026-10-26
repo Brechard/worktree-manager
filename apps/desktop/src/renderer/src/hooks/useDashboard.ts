@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type {
   AppSettings,
   CleanupCandidate,
@@ -20,8 +20,16 @@ import {
 import { useAppStore } from '../store'
 import { api } from '../api'
 import { shortenPath } from '../lib/paths'
-import { groupWorktrees, isSafeToDelete, sortWorktrees } from '../lib/worktreeSorting'
+import { groupWorktrees, sortWorktrees } from '../lib/worktreeSorting'
 import { mergeDiscoveredRepository } from '../lib/repositories'
+import {
+  removalVisibility,
+  removedWorktreePaths,
+  type RemovalPhase,
+} from '../lib/removalVisibility'
+import { runRemovalOperation } from '../lib/removalOperation'
+import { reconcileSelection, selectAllVisible } from '../lib/worktreeSelection'
+import { worktreeSafetyReasons } from '@worktree/contracts'
 
 export function defaultDirectionFor(sort: WorktreeSort): WorktreeSortDirection {
   return sort === 'name' ? 'asc' : sort === 'activity' ? 'desc' : 'asc'
@@ -40,6 +48,7 @@ function collectCleanupCandidates(repositoryId: string): CleanupCandidate[] {
   const candidates: CleanupCandidate[] = []
   for (const worktree of state.worktrees) {
     if (worktree.repositoryId !== repositoryId) continue
+    if (worktree.postCreateSetupState === 'running') continue
     const candidacy = cleanupCandidacy(worktree, state.statuses[worktree.id])
     if (candidacy) candidates.push({ worktree, ...candidacy })
   }
@@ -61,6 +70,61 @@ function toggleId(ids: Set<string>, id: string, present: boolean): Set<string> {
   return next
 }
 
+/** The chrome always presents activity and errors for the selected project. */
+function selectedProjectActivity(
+  repositoryId: string | null,
+  activity: {
+    loading: Set<string>
+    updating: Set<string>
+    catchingUp: Set<string>
+    statusProgress: Record<string, Progress>
+    baseProgress: Record<string, Progress>
+    errors: Record<string, string>
+    globalError: string | null
+    removalFailure: { repositoryId: string; message: string } | null
+  }
+) {
+  if (!repositoryId) {
+    return {
+      loading: false,
+      baseUpdating: false,
+      catchingUp: false,
+      statusProgress: null,
+      baseStatusProgress: null,
+      actionError: activity.globalError,
+    }
+  }
+  return {
+    loading: activity.loading.has(repositoryId),
+    baseUpdating: activity.updating.has(repositoryId),
+    catchingUp: activity.catchingUp.has(repositoryId),
+    statusProgress: activity.statusProgress[repositoryId] ?? null,
+    baseStatusProgress: activity.baseProgress[repositoryId] ?? null,
+    actionError:
+      activity.globalError ??
+      activity.errors[repositoryId] ??
+      (activity.removalFailure?.repositoryId === repositoryId
+        ? activity.removalFailure.message
+        : null),
+  }
+}
+
+/** Keep at most three disk walks active while yielding each result to its row. */
+async function measureBatch(
+  targets: Worktree[],
+  refresh: boolean,
+  measureOne: (worktree: Worktree, refresh: boolean) => Promise<void>
+): Promise<void> {
+  let cursor = 0
+  async function runWorker(): Promise<void> {
+    const next = targets[cursor++]
+    if (!next) return
+    await measureOne(next, refresh)
+    await runWorker()
+  }
+  await Promise.all(Array.from({ length: Math.min(3, targets.length) }, () => runWorker()))
+}
+
 export interface UseDashboardReturn {
   repositories: Repository[]
   worktrees: Worktree[]
@@ -75,6 +139,9 @@ export interface UseDashboardReturn {
   refreshingIds: Set<string>
   /** Worktrees whose project cleanup hook is currently running. */
   cleaningIds: Set<string>
+  pendingRemovals: Record<string, RemovalPhase>
+  failedRemovalId: string | null
+  retryFailedRemoval: () => void
   baseStatuses: Record<string, RepositoryBaseStatus>
   /** True while the *selected* project's base branch is being updated. */
   baseUpdating: boolean
@@ -89,6 +156,13 @@ export interface UseDashboardReturn {
   selectedRepo: Repository | null
   worktreeSections: ReturnType<typeof groupWorktrees>
   repoWorktrees: Worktree[]
+  selectedWorktreeIds: Set<string>
+  toggleWorktreeSelection: (id: string) => void
+  selectVisibleWorktrees: () => void
+  clearWorktreeSelection: () => void
+  openSelectedRemoval: () => void
+  openWorktreeRemoval: (worktree: Worktree) => void
+  reloadPersistedWorktrees: () => Promise<void>
   worktreeCountByRepo: Map<string, number>
   effectiveEditor: string
   sortMode: WorktreeSort
@@ -116,7 +190,11 @@ export interface UseDashboardReturn {
     measuring: boolean
   }
   /** Worktrees whose branch has landed, offered for removal. */
-  cleanupCandidates: { repositoryId: string; candidates: CleanupCandidate[] } | null
+  cleanupCandidates: {
+    repositoryId: string
+    candidates: CleanupCandidate[]
+    manual?: boolean
+  } | null
   openCleanupCandidates: (repositoryId: string) => void
   dismissCleanupCandidates: () => void
   deleteCleanupCandidates: (selected: Worktree[], permanent: boolean) => Promise<void>
@@ -148,7 +226,7 @@ export interface UseDashboardReturn {
   refreshWorktreeStatus: (worktree: Worktree) => Promise<void>
   saveRepository: (repo: Repository) => Promise<void>
   settings: AppSettings | null
-  setView: (view: 'onboarding' | 'dashboard' | 'settings') => void
+  openSettings: (section?: 'general' | 'connections' | 'worktrees' | 'scanning') => void
 }
 
 export function useDashboard(): UseDashboardReturn {
@@ -160,6 +238,7 @@ export function useDashboard(): UseDashboardReturn {
     scanProgress,
     selectedRepositoryId,
     settings,
+    credentialRevision,
     setStatuses,
     setStatus,
     removeStatuses,
@@ -167,7 +246,7 @@ export function useDashboard(): UseDashboardReturn {
     removeDiskUsage,
     applyBranchChange,
     setSettings,
-    setView,
+    openSettings,
     setRepositories,
     setWorktrees,
     setSelectedRepositoryId,
@@ -176,6 +255,7 @@ export function useDashboard(): UseDashboardReturn {
 
   const [filter, setFilter] = useState<'all' | 'dirty' | 'unmerged' | 'unpushed' | 'safe'>('all')
   const [search, setSearch] = useState('')
+  const [selectedWorktreeIds, setSelectedWorktreeIds] = useState<Set<string>>(new Set())
   const [projectSearch, setProjectSearch] = useState('')
   const [configRepoId, setConfigRepoId] = useState<string | null>(null)
   /**
@@ -187,6 +267,7 @@ export function useDashboard(): UseDashboardReturn {
   const [cleanupCandidates, setCleanupCandidates] = useState<{
     repositoryId: string
     candidates: CleanupCandidate[]
+    manual?: boolean
   } | null>(null)
   // Worktrees with a `du` walk or a reclaim in flight.
   const [measuringIds, setMeasuringIds] = useState<Set<string>>(new Set())
@@ -195,6 +276,14 @@ export function useDashboard(): UseDashboardReturn {
   // Worktrees whose project cleanup hook is running. Tearing down a Docker
   // stack takes a while, so the row has to say something is happening.
   const [cleaningIds, setCleaningIds] = useState<Set<string>>(new Set())
+  const pendingRemovals = useSyncExternalStore(
+    removalVisibility.subscribe,
+    removalVisibility.getSnapshot
+  )
+  const failure = useSyncExternalStore(removalVisibility.subscribe, removalVisibility.getFailure)
+  const failedRemovalId = failure?.worktreeId ?? null
+  const beginRemoval = removalVisibility.begin
+  const finishRemoval = removalVisibility.finish
   const [baseStatuses, setBaseStatuses] = useState<Record<string, RepositoryBaseStatus>>({})
 
   // Everything below is keyed by repository id. A project's refresh, base
@@ -276,6 +365,37 @@ export function useDashboard(): UseDashboardReturn {
     [clearProgress, setRepoError, setStatuses]
   )
 
+  const lastCredentialRevision = useRef(credentialRevision)
+  const previousCredentialTokens = useRef({
+    github: settings?.githubToken,
+    azure: settings?.azureToken,
+  })
+  useEffect(() => {
+    if (lastCredentialRevision.current === credentialRevision) return
+    lastCredentialRevision.current = credentialRevision
+    const current = useAppStore.getState()
+    const changedProviders = new Set([
+      ...(previousCredentialTokens.current.github !== current.settings?.githubToken
+        ? ['github']
+        : []),
+      ...(previousCredentialTokens.current.azure !== current.settings?.azureToken ? ['azure'] : []),
+    ])
+    previousCredentialTokens.current = {
+      github: current.settings?.githubToken,
+      azure: current.settings?.azureToken,
+    }
+    const affected = current.repositories.filter((repo) => {
+      const provider = repo.provider
+      return provider && !provider.personalAccessToken && changedProviders.has(provider.type)
+    })
+    affected.sort(
+      (a, b) =>
+        Number(b.id === current.selectedRepositoryId) -
+        Number(a.id === current.selectedRepositoryId)
+    )
+    for (const repo of affected) void loadRepoStatuses(repo.id)
+  }, [credentialRevision, loadRepoStatuses])
+
   const refreshWorktreeStatus = useCallback(
     async (worktree: Worktree, isCancelled?: () => boolean) => {
       const repo = useAppStore.getState().repositories.find((r) => r.id === worktree.repositoryId)
@@ -352,15 +472,7 @@ export function useDashboard(): UseDashboardReturn {
 
       measuringReposRef.current.add(repositoryId)
       try {
-        let cursor = 0
-        const workers = Array.from({ length: Math.min(3, targets.length) }, async () => {
-          while (cursor < targets.length) {
-            const next = targets[cursor++]
-            if (!next) return
-            await measureOne(next, refresh)
-          }
-        })
-        await Promise.all(workers)
+        await measureBatch(targets, refresh, measureOne)
       } finally {
         measuringReposRef.current.delete(repositoryId)
       }
@@ -511,9 +623,28 @@ export function useDashboard(): UseDashboardReturn {
       if (!loadedWorktreeIds.current.has(w.id)) stale.add(w.repositoryId)
     }
     if (stale.size === 0) return
-    for (const w of worktrees) loadedWorktreeIds.current.add(w.id)
-    for (const repositoryId of stale) void loadRepoStatuses(repositoryId)
-  }, [worktrees, loadRepoStatuses])
+    if (selectedRepositoryId && stale.delete(selectedRepositoryId)) {
+      for (const w of worktrees) {
+        if (w.repositoryId === selectedRepositoryId) loadedWorktreeIds.current.add(w.id)
+      }
+      void loadRepoStatuses(selectedRepositoryId)
+    }
+    if (stale.size === 0) return
+    const schedule =
+      window.requestIdleCallback ??
+      ((callback: IdleRequestCallback) =>
+        window.setTimeout(() => callback({ didTimeout: false, timeRemaining: () => 0 }), 500))
+    const cancel = window.cancelIdleCallback ?? window.clearTimeout
+    const handle = schedule(() => {
+      for (const repositoryId of stale) {
+        for (const w of worktrees) {
+          if (w.repositoryId === repositoryId) loadedWorktreeIds.current.add(w.id)
+        }
+        void loadRepoStatuses(repositoryId)
+      }
+    })
+    return () => cancel(handle)
+  }, [worktrees, selectedRepositoryId, loadRepoStatuses])
 
   const rescan = useCallback(async () => {
     if (scanning) return
@@ -552,17 +683,29 @@ export function useDashboard(): UseDashboardReturn {
           kept.push(w)
         }
       }
-      const mergedWorktrees = [...kept, ...result.worktrees]
+      // A scan started before removal may finish afterward. Its stale disk
+      // snapshot must not bring a successfully removed row back.
+      const discovered = result.worktrees.filter((w) => !removedWorktreePaths.has(w.path))
+      const discoveredPaths = new Set(result.worktrees.map((w) => w.path))
+      const mergedWorktrees = [...kept, ...discovered].filter(
+        (w) => !removedWorktreePaths.has(w.path)
+      )
+      for (const path of removedWorktreePaths) {
+        if (!discoveredPaths.has(path)) removedWorktreePaths.delete(path)
+      }
 
       await Promise.all([api.setRepositories(mergedRepos), api.setWorktrees(mergedWorktrees)])
+      const authoritativeWorktrees = (await api.getWorktrees()).filter(
+        (w) => !removedWorktreePaths.has(w.path)
+      )
       setRepositories(mergedRepos)
-      // A rescan is the one deliberately global action: forget what we've loaded
-      // so the effect below re-reads every project's status from disk.
+      // Forget cached status coverage. The effect loads the selected project
+      // first and defers other projects until the browser is idle.
       loadedWorktreeIds.current.clear()
-      setWorktrees(mergedWorktrees)
+      setWorktrees(authoritativeWorktrees)
       console.info('[worktree] rescan:done', {
         repositories: mergedRepos.length,
-        worktrees: mergedWorktrees.length,
+        worktrees: authoritativeWorktrees.length,
       })
     } catch (err) {
       console.error('[worktree] rescan:error', err)
@@ -585,14 +728,15 @@ export function useDashboard(): UseDashboardReturn {
 
   const persistRepos = useCallback(
     async (next: Repository[]) => {
-      setRepositories(next)
       await api.setRepositories(next)
+      setRepositories(next)
     },
     [setRepositories]
   )
 
   const selectRepository = useCallback(
     async (id: string) => {
+      setSelectedWorktreeIds(new Set())
       setSelectedRepositoryId(id)
       if (settings) {
         await api.setSettings({ ...settings, lastSelectedRepositoryId: id })
@@ -827,6 +971,7 @@ export function useDashboard(): UseDashboardReturn {
     const filtered: Worktree[] = []
     for (const w of worktrees) {
       if (w.repositoryId !== selectedRepo.id) continue
+      if (pendingRemovals[w.id] === 'hidden') continue
       const status = statuses[w.id]
       if (query) {
         const text = `${status?.branch ?? w.branch} ${w.path}`.toLowerCase()
@@ -842,12 +987,93 @@ export function useDashboard(): UseDashboardReturn {
       } else if (filter === 'unpushed') {
         if ((status?.ahead ?? 0) === 0 && (status?.unpushed ?? 0) === 0) continue
       } else if (filter === 'safe') {
-        if (!isSafeToDelete(w, status)) continue
+        if (cleanupCandidacy(w, status)?.kind !== 'ready') continue
       }
       filtered.push(w)
     }
     return sortWorktrees(filtered, statuses, sortMode, sortDirection)
-  }, [selectedRepo, worktrees, statuses, filter, search, sortMode, sortDirection])
+  }, [selectedRepo, worktrees, statuses, pendingRemovals, filter, search, sortMode, sortDirection])
+
+  // A changed search, filter, refresh or removal cannot leave invisible rows armed.
+  useEffect(() => {
+    setSelectedWorktreeIds((ids) => {
+      const next = reconcileSelection(ids, repoWorktrees)
+      return next.size === ids.size ? ids : next
+    })
+  }, [repoWorktrees])
+
+  const toggleWorktreeSelection = useCallback((id: string) => {
+    setSelectedWorktreeIds((ids) => {
+      const next = new Set(ids)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }, [])
+  const selectVisibleWorktrees = useCallback(() => {
+    setSelectedWorktreeIds(selectAllVisible(repoWorktrees))
+  }, [repoWorktrees])
+  const clearWorktreeSelection = useCallback(() => setSelectedWorktreeIds(new Set()), [])
+  const reloadPersistedWorktrees = useCallback(async () => {
+    setWorktrees(await api.getWorktrees())
+  }, [setWorktrees])
+  const openWorktreeRemoval = useCallback(
+    (worktree: Worktree) => {
+      if (
+        worktree.isMain ||
+        worktree.prunable ||
+        worktree.postCreateSetupState === 'running' ||
+        removalVisibility.isPending(worktree.id)
+      )
+        return
+      const status = statuses[worktree.id]
+      const candidacy = cleanupCandidacy(worktree, status)
+      const candidate: CleanupCandidate = candidacy
+        ? { worktree, ...candidacy }
+        : {
+            worktree,
+            kind: 'review',
+            branch: status?.branch ?? worktree.branch,
+            reasons: status
+              ? worktreeSafetyReasons(worktree, status)
+              : ['Status has not been checked; changes and commits may be lost'],
+          }
+      setCleanupCandidates({
+        repositoryId: worktree.repositoryId,
+        candidates: [candidate],
+        manual: true,
+      })
+    },
+    [statuses]
+  )
+  const openSelectedRemoval = useCallback(() => {
+    if (!selectedRepo) return
+    const candidates: CleanupCandidate[] = repoWorktrees
+      .filter(
+        (w) =>
+          selectedWorktreeIds.has(w.id) &&
+          !w.isMain &&
+          !w.prunable &&
+          w.postCreateSetupState !== 'running' &&
+          !removalVisibility.isPending(w.id)
+      )
+      .map((worktree) => {
+        const status = statuses[worktree.id]
+        const candidacy = cleanupCandidacy(worktree, status)
+        return candidacy
+          ? { worktree, ...candidacy }
+          : {
+              worktree,
+              kind: 'review' as const,
+              branch: status?.branch ?? worktree.branch,
+              reasons: status
+                ? worktreeSafetyReasons(worktree, status)
+                : ['Status has not been checked; changes and commits may be lost'],
+            }
+      })
+    if (candidates.length)
+      setCleanupCandidates({ repositoryId: selectedRepo.id, candidates, manual: true })
+  }, [selectedRepo, repoWorktrees, selectedWorktreeIds, statuses])
 
   const worktreeSections = useMemo(
     () => groupWorktrees(repoWorktrees, statuses, sortMode === 'safety'),
@@ -864,6 +1090,8 @@ export function useDashboard(): UseDashboardReturn {
     let measuring = false
     for (const w of worktrees) {
       if (w.repositoryId !== selectedRepositoryId) continue
+      if (w.postCreateSetupState === 'running') continue
+      if (removalVisibility.isPending(w.id)) continue
       const candidacy = cleanupCandidacy(w, statuses[w.id])
       if (!candidacy) continue
       if (candidacy.kind === 'ready') ready += 1
@@ -873,7 +1101,7 @@ export function useDashboard(): UseDashboardReturn {
       else measuring = true
     }
     return { ready, review, bytes, measuring }
-  }, [selectedRepositoryId, worktrees, statuses, diskUsage])
+  }, [selectedRepositoryId, worktrees, statuses, diskUsage, pendingRemovals])
 
   const worktreeCountByRepo = useMemo(() => {
     const map = new Map<string, number>()
@@ -903,10 +1131,7 @@ export function useDashboard(): UseDashboardReturn {
           repoName: repo.name,
           ...(repo.preDeleteTimeoutSeconds ? { timeoutSeconds: repo.preDeleteTimeoutSeconds } : {}),
         })
-        if (result.success) {
-          if (result.output) console.info('[worktree] cleanup:done', w.path, result.output)
-          return true
-        }
+        if (result.success) return true
         const reason = result.timedOut
           ? `The cleanup command timed out.`
           : `The cleanup command failed${result.exitCode != null ? ` (exit ${result.exitCode})` : ''}.`
@@ -930,51 +1155,78 @@ export function useDashboard(): UseDashboardReturn {
       w: Worktree,
       repo: Repository,
       status: WorktreeStatus | undefined,
-      options?: { permanent?: boolean }
+      options?: { permanent?: boolean; preclaimed?: boolean; preserveBranch?: boolean }
     ): Promise<{ deleted: boolean; error?: string }> => {
       const branch = status?.branch ?? w.branch
       if (options?.permanent && !status) {
+        if (options.preclaimed) finishRemoval(w.id)
         return { deleted: false, error: 'Could not verify this worktree before permanent removal.' }
       }
-      if (!(await runCleanup(w, repo, branch))) return { deleted: false }
-
-      // A review candidate may contain local work. Its directory is recoverable
-      // from Trash, so its branch must remain recoverable too. Only the clean,
-      // plain "ready" case deletes the branch automatically; permanent removal
-      // gets the same decision revalidated in main immediately before rm.
-      const shouldDeleteBranch =
-        cleanupCandidacy(w, status)?.kind === 'ready' &&
-        branch !== 'HEAD' &&
-        branch !== status?.baseBranch
-      const res = await window.api.removeWorktree({
-        path: w.path,
-        repoPath: repo.path,
-        branch,
-        deleteBranch: shouldDeleteBranch,
-        ...(status && (options?.permanent || shouldDeleteBranch)
-          ? {
-              ...(options?.permanent ? { permanent: true } : {}),
-              worktree: w,
-              repository: repo,
-              expectedStatus: status,
-            }
-          : {}),
+      let next: Worktree[] = []
+      return runRemovalOperation({
+        id: w.id,
+        visibility: removalVisibility,
+        ...(options?.preclaimed ? { preclaimed: true } : {}),
+        cleanup: () => runCleanup(w, repo, branch),
+        remove: async () => {
+          const shouldDeleteBranch =
+            !options?.preserveBranch &&
+            cleanupCandidacy(w, status)?.kind === 'ready' &&
+            branch !== 'HEAD' &&
+            branch !== status?.baseBranch
+          return window.api.removeWorktree({
+            path: w.path,
+            repoPath: repo.path,
+            branch,
+            deleteBranch: shouldDeleteBranch,
+            ...(status && (options?.permanent || shouldDeleteBranch)
+              ? {
+                  ...(options?.permanent ? { permanent: true } : {}),
+                  worktree: w,
+                  repository: repo,
+                  expectedStatus: status,
+                }
+              : {}),
+          })
+        },
+        waitForSweep: () => new Promise<void>((resolve) => window.setTimeout(resolve, 220)),
+        commit: () => {
+          removedWorktreePaths.add(w.path)
+          next = useAppStore.getState().worktrees.filter((x) => x.path !== w.path)
+          removeStatuses([w.id])
+          removeDiskUsage([w.id])
+          setWorktrees(next)
+        },
+        persist: () => api.setWorktrees(next),
+        refreshAfterFailure: () => {
+          // A cleanup hook may have modified the tree. Keep newer store data
+          // instead of restoring a stale snapshot, then request fresh evidence.
+          void refreshWorktreeStatus(w).catch(() => undefined)
+          void measureOne(w, true)
+        },
       })
-      if (!res.success) {
-        return { deleted: false, error: res.error || 'Failed to remove worktree' }
-      }
-      const next = useAppStore.getState().worktrees.filter((x) => x.path !== w.path)
-      removeStatuses([w.id])
-      removeDiskUsage([w.id])
-      setWorktrees(next)
-      await api.setWorktrees(next)
-      return res.branchError ? { deleted: true, error: res.branchError } : { deleted: true }
     },
-    [removeDiskUsage, removeStatuses, runCleanup, setWorktrees]
+    [
+      finishRemoval,
+      measureOne,
+      refreshWorktreeStatus,
+      removeDiskUsage,
+      removeStatuses,
+      runCleanup,
+      setWorktrees,
+    ]
   )
 
   const handleDelete = useCallback(
     async (w: Worktree) => {
+      if (removalVisibility.isPending(w.id)) return
+      if (w.postCreateSetupState === 'running') {
+        setRepoError(
+          w.repositoryId,
+          'Setup is still running. Wait for it to finish before removing this worktree.'
+        )
+        return
+      }
       if (w.isMain) {
         window.alert('The primary worktree cannot be deleted from here.')
         return
@@ -987,25 +1239,34 @@ export function useDashboard(): UseDashboardReturn {
           `This worktree's folder is already gone.\n\nRemove the stale entry from git?\n${shortenPath(w.path)}`
         )
         if (!ok) return
-        // The folder is gone but whatever it allocated may not be, so the hook
-        // still runs — from the repo root, since there's no worktree dir left.
-        if (!(await runCleanup(w, repo, w.branch))) return
-        const res = await window.api.removeWorktree({
-          path: w.path,
-          repoPath: repo.path,
-          missing: true,
-        })
-        if (!res.success) {
-          setRepoError(repo.id, res.error || 'Failed to prune worktree')
+        if (!beginRemoval(w.id)) return
+        try {
+          // The folder is gone but whatever it allocated may not be, so the hook
+          // still runs — from the repo root, since there's no worktree dir left.
+          if (!(await runCleanup(w, repo, w.branch))) return
+          const res = await window.api.removeWorktree({
+            path: w.path,
+            repoPath: repo.path,
+            missing: true,
+          })
+          if (!res.success) {
+            setRepoError(repo.id, res.error || 'Failed to prune worktree')
+            return
+          }
+          removedWorktreePaths.add(w.path)
+          const pruned = worktrees.filter((x) => x.repositoryId === repo.id && x.prunable)
+          const next = worktrees.filter((x) => !(x.repositoryId === repo.id && x.prunable))
+          removeStatuses(pruned.map((x) => x.id))
+          removeDiskUsage(pruned.map((x) => x.id))
+          setWorktrees(next)
+          await api.setWorktrees(next)
           return
+        } catch (error) {
+          setRepoError(repo.id, String(error))
+          return
+        } finally {
+          finishRemoval(w.id)
         }
-        const pruned = worktrees.filter((x) => x.repositoryId === repo.id && x.prunable)
-        const next = worktrees.filter((x) => !(x.repositoryId === repo.id && x.prunable))
-        removeStatuses(pruned.map((x) => x.id))
-        removeDiskUsage(pruned.map((x) => x.id))
-        setWorktrees(next)
-        await api.setWorktrees(next)
-        return
       }
 
       const status = statuses[w.id]
@@ -1030,10 +1291,14 @@ export function useDashboard(): UseDashboardReturn {
       }
 
       const outcome = await removeWorktreeAndBranch(w, repo, status)
+      if (!outcome.deleted && outcome.error)
+        removalVisibility.fail({ worktreeId: w.id, repositoryId: repo.id, message: outcome.error })
       if (outcome.error) setRepoError(repo.id, outcome.error)
     },
     [
       repositories,
+      beginRemoval,
+      finishRemoval,
       removeDiskUsage,
       removeStatuses,
       removeWorktreeAndBranch,
@@ -1045,9 +1310,19 @@ export function useDashboard(): UseDashboardReturn {
     ]
   )
 
+  // Ask for confirmation again on retry, since repository state may have changed.
+  const retryFailedRemoval = useCallback(() => {
+    const worktree = useAppStore.getState().worktrees.find((item) => item.id === failedRemovalId)
+    if (!worktree) return
+    if (worktree.prunable) void handleDelete(worktree)
+    else openWorktreeRemoval(worktree)
+  }, [failedRemovalId, handleDelete, openWorktreeRemoval])
+
   const openCleanupCandidates = useCallback(
     (repositoryId: string) => {
-      const candidates = collectCleanupCandidates(repositoryId)
+      const candidates = collectCleanupCandidates(repositoryId).filter(
+        ({ worktree }) => !removalVisibility.isPending(worktree.id)
+      )
       if (candidates.length === 0) return
       setCleanupCandidates({ repositoryId, candidates })
       void measureRepoDisk(repositoryId)
@@ -1060,19 +1335,49 @@ export function useDashboard(): UseDashboardReturn {
   const deleteCleanupCandidates = useCallback(
     async (selected: Worktree[], permanent: boolean) => {
       const repositoryId = cleanupCandidates?.repositoryId
+      const manual = cleanupCandidates?.manual === true
       setCleanupCandidates(null)
+      setSelectedWorktreeIds(new Set())
       if (selected.length === 0) return
       const errors: string[] = []
-      for (const w of selected) {
+      const confirmed = selected.filter((w) => {
+        const current = useAppStore.getState().worktrees.find((item) => item.id === w.id)
+        if (current?.postCreateSetupState === 'running') {
+          errors.push(`${shortenPath(w.path)}: Setup is still running; removal was skipped.`)
+          return false
+        }
+        return current && beginRemoval(w.id)
+      })
+      // Process one destructive operation at a time. Each step reads current
+      // persisted state after the previous operation commits or fails.
+      async function removeConfirmed(index: number): Promise<void> {
+        const w = confirmed[index]
+        if (!w) return
         const repo = useAppStore.getState().repositories.find((r) => r.id === w.repositoryId)
-        if (!repo) continue
+        if (!repo) {
+          finishRemoval(w.id)
+          errors.push(`${shortenPath(w.path)}: Project no longer exists.`)
+          return removeConfirmed(index + 1)
+        }
         const status = useAppStore.getState().statuses[w.id]
-        const outcome = await removeWorktreeAndBranch(w, repo, status, { permanent })
+        const outcome = await removeWorktreeAndBranch(w, repo, status, {
+          permanent,
+          preclaimed: true,
+          preserveBranch: manual,
+        })
+        if (!outcome.deleted && outcome.error)
+          removalVisibility.fail({
+            worktreeId: w.id,
+            repositoryId: repo.id,
+            message: outcome.error,
+          })
         if (outcome.error) errors.push(`${shortenPath(w.path)}: ${outcome.error}`)
+        await removeConfirmed(index + 1)
       }
+      await removeConfirmed(0)
       if (errors.length > 0 && repositoryId) setRepoError(repositoryId, errors.join('\n\n'))
     },
-    [cleanupCandidates, removeWorktreeAndBranch, setRepoError]
+    [cleanupCandidates, beginRemoval, finishRemoval, removeWorktreeAndBranch, setRepoError]
   )
 
   const saveRepository = useCallback(
@@ -1089,17 +1394,17 @@ export function useDashboard(): UseDashboardReturn {
   // Everything the chrome renders is the selected project's slice of the
   // per-repo maps — switching projects switches which spinner you're watching,
   // it never merges two projects' progress into one indicator.
-  const loading = selectedRepositoryId ? loadingRepoIds.has(selectedRepositoryId) : false
-  const baseUpdating = selectedRepositoryId ? baseUpdatingRepoIds.has(selectedRepositoryId) : false
-  const catchingUp = selectedRepositoryId ? catchingUpRepoIds.has(selectedRepositoryId) : false
-  const statusProgress = selectedRepositoryId
-    ? (statusProgressByRepo[selectedRepositoryId] ?? null)
-    : null
-  const baseStatusProgress = selectedRepositoryId
-    ? (baseProgressByRepo[selectedRepositoryId] ?? null)
-    : null
-  const actionError =
-    globalError ?? (selectedRepositoryId ? (errorsByRepo[selectedRepositoryId] ?? null) : null)
+  const { loading, baseUpdating, catchingUp, statusProgress, baseStatusProgress, actionError } =
+    selectedProjectActivity(selectedRepositoryId, {
+      loading: loadingRepoIds,
+      updating: baseUpdatingRepoIds,
+      catchingUp: catchingUpRepoIds,
+      statusProgress: statusProgressByRepo,
+      baseProgress: baseProgressByRepo,
+      errors: errorsByRepo,
+      globalError,
+      removalFailure: failure,
+    })
 
   const busyRepoIds = useMemo(
     () => new Set([...loadingRepoIds, ...baseUpdatingRepoIds, ...catchingUpRepoIds]),
@@ -1113,6 +1418,7 @@ export function useDashboard(): UseDashboardReturn {
       if (value === null) {
         setGlobalError(null)
         if (selectedRepositoryId) setRepoError(selectedRepositoryId, null)
+        removalVisibility.clearFailure()
         return
       }
       if (selectedRepositoryId) setRepoError(selectedRepositoryId, value)
@@ -1139,6 +1445,9 @@ export function useDashboard(): UseDashboardReturn {
     scanning,
     refreshingIds,
     cleaningIds,
+    pendingRemovals,
+    failedRemovalId,
+    retryFailedRemoval,
     baseStatuses,
     baseUpdating,
     busyRepoIds,
@@ -1150,6 +1459,13 @@ export function useDashboard(): UseDashboardReturn {
     selectedRepo,
     worktreeSections,
     repoWorktrees,
+    selectedWorktreeIds,
+    toggleWorktreeSelection,
+    selectVisibleWorktrees,
+    clearWorktreeSelection,
+    openSelectedRemoval,
+    openWorktreeRemoval,
+    reloadPersistedWorktrees,
     worktreeCountByRepo,
     effectiveEditor,
     sortMode,
@@ -1188,6 +1504,6 @@ export function useDashboard(): UseDashboardReturn {
     onActionError,
     onBranchChange: applyBranchChange,
     settings,
-    setView,
+    openSettings,
   }
 }

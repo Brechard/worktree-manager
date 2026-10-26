@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import { ArrowLeft, KeyRound, Loader2, Plus, X } from 'lucide-react'
+import { KeyRound, Loader2, Plus, X } from 'lucide-react'
 import { useAppStore } from '../store'
+import type { PullRequestLookup, WorktreeLocation } from '@worktree/contracts'
 import { api } from '../api'
 import { cn } from '../lib/utils'
 import {
@@ -11,20 +12,52 @@ import {
   shortenPath,
 } from '../lib/paths'
 import { applyTheme, type Theme } from '../lib/theme'
-import { TitleBar } from './TitleBar'
+import { buildSettingsDraft, settingsDraftChanged } from '../lib/settingsDraft'
+import { ScanSourcesSetting } from './ScanSourcesSetting'
+import { Button, IconButton } from './ui/Button'
+import { Select, TextInput } from './ui/Field'
+import { UnsavedChangesDialog } from './ui/UnsavedChangesDialog'
+import { Dialog } from './ui/Dialog'
+import { SettingsTabs } from './ui/SettingsTabs'
+
+type SettingsSection = 'general' | 'connections' | 'worktrees' | 'scanning'
+
+const sectionTabs: { id: SettingsSection; label: string }[] = [
+  { id: 'general', label: 'General' },
+  { id: 'connections', label: 'Connections' },
+  { id: 'worktrees', label: 'Worktrees' },
+  { id: 'scanning', label: 'Scanning' },
+]
 
 function useSettings() {
-  const { settings, setSettings, setView } = useAppStore()
+  const { settings, setSettings, closeSettings } = useAppStore()
   const [editor, setEditor] = useState(settings?.defaultEditor ?? 'cursor')
   const [terminal, setTerminal] = useState(settings?.defaultTerminal ?? '')
   const [theme, setTheme] = useState<Theme>(settings?.theme ?? 'system')
   const [dirs, setDirs] = useState<string[]>(settings?.watchedDirectories ?? [])
   const [excluded, setExcluded] = useState<string[]>(settings?.excludedPaths ?? [])
+  const [includeAgentWorktrees, setIncludeAgentWorktrees] = useState(
+    settings?.includeAgentWorktrees ?? false
+  )
+  const [defaultWorktreeLocation, setDefaultWorktreeLocation] = useState<WorktreeLocation>(
+    settings?.defaultWorktreeLocation ?? 'sibling'
+  )
+  const [defaultWorktreeCustomParent, setDefaultWorktreeCustomParent] = useState(
+    settings?.defaultWorktreeCustomParent ?? ''
+  )
   const [githubToken, setGithubToken] = useState(settings?.githubToken ?? '')
   const [azureToken, setAzureToken] = useState(settings?.azureToken ?? '')
   const [saving, setSaving] = useState(false)
+  const [showUnsaved, setShowUnsaved] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
   const [detecting, setDetecting] = useState<'github' | 'azure' | null>(null)
   const [tokenMsg, setTokenMsg] = useState<string | null>(null)
+  const [connection, setConnection] = useState<PullRequestLookup | null>(null)
+  const [checkingConnection, setCheckingConnection] = useState(false)
+  const [connectionRepoId, setConnectionRepoId] = useState(
+    () => useAppStore.getState().selectedRepositoryId ?? ''
+  )
+  const repositories = useAppStore((state) => state.repositories)
   const [version, setVersion] = useState<string>('')
   const [availableEditorIds, setAvailableEditorIds] = useState<string[] | null>(null)
 
@@ -96,69 +129,64 @@ function useSettings() {
     }
   }
 
-  const nextSettings = () => ({
-    watchedDirectories: dirs,
-    excludedPaths: excluded,
-    defaultEditor: editor,
-    theme,
-    ...(terminal ? { defaultTerminal: terminal } : {}),
-    ...(githubToken ? { githubToken } : {}),
-    ...(azureToken ? { azureToken } : {}),
-    worktreeSort: settings?.worktreeSort ?? 'activity',
-    worktreeSortDirection: settings?.worktreeSortDirection ?? 'desc',
-  })
+  const nextSettings = () =>
+    buildSettingsDraft(settings, {
+      dirs,
+      excluded,
+      editor,
+      terminal,
+      theme,
+      githubToken,
+      azureToken,
+      includeAgentWorktrees,
+      defaultWorktreeLocation,
+      defaultWorktreeCustomParent,
+    })
 
-  const hasChanges = () => {
-    const current = nextSettings()
-    const prev = {
-      watchedDirectories: settings?.watchedDirectories ?? [],
-      excludedPaths: settings?.excludedPaths ?? [],
-      defaultEditor: settings?.defaultEditor ?? 'cursor',
-      theme: settings?.theme ?? 'system',
-      defaultTerminal: settings?.defaultTerminal ?? '',
-      githubToken: settings?.githubToken ?? '',
-      azureToken: settings?.azureToken ?? '',
-      worktreeSort: settings?.worktreeSort ?? 'activity',
-      worktreeSortDirection: settings?.worktreeSortDirection ?? 'desc',
-    }
-    return (
-      JSON.stringify({
-        ...current,
-        watchedDirectories: [...current.watchedDirectories].sort(),
-        excludedPaths: [...current.excludedPaths].sort(),
-      }) !==
-      JSON.stringify({
-        ...prev,
-        watchedDirectories: [...prev.watchedDirectories].sort(),
-        excludedPaths: [...prev.excludedPaths].sort(),
-      })
-    )
-  }
+  const hasChanges = () => settingsDraftChanged(settings, nextSettings())
 
   const save = async () => {
     setSaving(true)
+    setSaveError(null)
     try {
       const next = nextSettings()
       await api.setSettings(next)
       setSettings(next)
-      setView('dashboard')
+      closeSettings()
+    } catch (error) {
+      const message = `Could not save settings: ${String(error)}`
+      setTokenMsg(message)
+      setSaveError(message)
     } finally {
       setSaving(false)
     }
   }
 
+  const checkConnection = async () => {
+    if (!connectionRepoId) return
+    setCheckingConnection(true)
+    setConnection(null)
+    try {
+      setConnection(await api.checkProviderConnection(connectionRepoId))
+    } catch (error) {
+      setTokenMsg(`Could not check provider connection: ${String(error)}`)
+    } finally {
+      setCheckingConnection(false)
+    }
+  }
+
   const goBack = () => {
     if (!hasChanges()) {
-      setView('dashboard')
+      closeSettings()
       return
     }
-    const saveChanges = window.confirm('You have unsaved changes. Save before going back?')
-    if (saveChanges) {
-      void save()
-    } else {
-      applyTheme(settings?.theme ?? 'system')
-      setView('dashboard')
-    }
+    setShowUnsaved(true)
+  }
+
+  const discardChanges = () => {
+    applyTheme(settings?.theme ?? 'system')
+    setShowUnsaved(false)
+    closeSettings()
   }
 
   return {
@@ -174,6 +202,12 @@ function useSettings() {
     excluded,
     addExcluded,
     removeExcluded,
+    includeAgentWorktrees,
+    setIncludeAgentWorktrees,
+    defaultWorktreeLocation,
+    setDefaultWorktreeLocation,
+    defaultWorktreeCustomParent,
+    setDefaultWorktreeCustomParent,
     githubToken,
     setGithubToken,
     azureToken,
@@ -181,11 +215,21 @@ function useSettings() {
     detecting,
     detect,
     tokenMsg,
+    connection,
+    checkingConnection,
+    connectionRepoId,
+    setConnectionRepoId,
+    repositories,
+    checkConnection,
     editorOptions,
     saving,
     save,
     version,
     goBack,
+    showUnsaved,
+    setShowUnsaved,
+    discardChanges,
+    saveError,
   }
 }
 
@@ -204,6 +248,7 @@ function AppearanceSection({
           <button
             type="button"
             key={t}
+            aria-pressed={theme === t}
             onClick={() => previewTheme(t)}
             className={cn(
               'rounded-md border border-border px-3 py-1.5 text-sm capitalize',
@@ -236,19 +281,18 @@ function DefaultEditorSection({
         Fallback when a project has no editor of its own. Prefer setting the editor on the project
         header (“Open with”).
       </p>
-      <select
+      <Select
         id="default-editor"
         value={editor}
         onChange={(e) => setEditor(e.target.value)}
         aria-label="Default editor"
-        className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
       >
         {editorOptions.map((opt) => (
           <option key={opt.id} value={opt.id}>
             {opt.label}
           </option>
         ))}
-      </select>
+      </Select>
     </section>
   )
 }
@@ -266,19 +310,61 @@ function DefaultTerminalSection({
         Default terminal
       </h2>
       <p className="mb-3 text-xs text-muted">macOS app name, or system default.</p>
-      <select
+      <Select
         id="default-terminal"
         value={terminal}
         onChange={(e) => setTerminal(e.target.value)}
         aria-label="Default terminal"
-        className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
       >
         {TERMINAL_OPTIONS.map((opt) => (
           <option key={opt.id} value={opt.command}>
             {opt.label}
           </option>
         ))}
-      </select>
+      </Select>
+    </section>
+  )
+}
+
+function WorktreeCreationDefaults({
+  location,
+  setLocation,
+  customParent,
+  setCustomParent,
+}: {
+  location: WorktreeLocation
+  setLocation: (value: WorktreeLocation) => void
+  customParent: string
+  setCustomParent: (value: string) => void
+}) {
+  return (
+    <section className="space-y-3">
+      <div>
+        <h2 className="text-xs font-semibold uppercase tracking-wider text-muted">New worktrees</h2>
+        <p className="mt-1 text-xs text-muted">
+          Default location for projects without their own preference. You can change it during
+          creation.
+        </p>
+      </div>
+      <Select
+        aria-label="Default worktree location"
+        value={location}
+        onChange={(event) => setLocation(event.target.value as WorktreeLocation)}
+      >
+        <option value="sibling">Beside project — &lt;project&gt;.worktrees</option>
+        <option value="inside">Inside project — .worktrees</option>
+        <option value="managed">~/.worktree-manager</option>
+        <option value="custom">Custom parent directory</option>
+      </Select>
+      {location === 'custom' && (
+        <TextInput
+          aria-label="Default custom parent directory"
+          value={customParent}
+          onChange={(event) => setCustomParent(event.target.value)}
+          placeholder="/absolute/path/to/worktrees"
+          className="font-mono"
+        />
+      )}
     </section>
   )
 }
@@ -329,13 +415,12 @@ function ProviderTokensSection({
               Detect
             </button>
           </div>
-          <input
+          <TextInput
             id="github-token"
             type="password"
             value={githubToken}
             onChange={(e) => setGithubToken(e.target.value)}
             placeholder="ghp_… or empty"
-            className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
           />
         </div>
         <div>
@@ -356,13 +441,12 @@ function ProviderTokensSection({
               Detect
             </button>
           </div>
-          <input
+          <TextInput
             id="azure-token"
             type="password"
             value={azureToken}
             onChange={(e) => setAzureToken(e.target.value)}
             placeholder="PAT or empty"
-            className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
           />
         </div>
       </div>
@@ -385,14 +469,10 @@ function WatchedDirectoriesSection({
         <h2 className="text-xs font-semibold uppercase tracking-wider text-muted">
           Watched directories
         </h2>
-        <button
-          type="button"
-          onClick={addDir}
-          className="inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1.5 text-xs font-medium text-primary-foreground hover:opacity-90"
-        >
+        <Button size="compact" variant="primary" onClick={addDir}>
           <Plus className="h-3.5 w-3.5" />
           Add folder
-        </button>
+        </Button>
       </div>
       {dirs.length === 0 ? (
         <p className="text-sm text-muted">No folders watched yet.</p>
@@ -406,14 +486,15 @@ function WatchedDirectoriesSection({
               <span className="truncate font-mono text-xs" title={dir}>
                 {shortenPath(dir)}
               </span>
-              <button
-                type="button"
+              <IconButton
+                size="compact"
+                variant="quiet"
                 onClick={() => removeDir(i)}
                 aria-label="Remove directory"
-                className="ml-2 text-muted hover:text-destructive"
+                className="ml-2"
               >
                 <X className="h-4 w-4" />
-              </button>
+              </IconButton>
             </li>
           ))}
         </ul>
@@ -442,14 +523,10 @@ function ExcludedPathsSection({
             These paths are skipped when discovering worktrees.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={addExcluded}
-          className="inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1.5 text-xs font-medium text-primary-foreground hover:opacity-90"
-        >
+        <Button size="compact" variant="primary" onClick={addExcluded}>
           <Plus className="h-3.5 w-3.5" />
           Add folder
-        </button>
+        </Button>
       </div>
       {excluded.length === 0 ? (
         <p className="text-sm text-muted">No excluded folders.</p>
@@ -463,14 +540,15 @@ function ExcludedPathsSection({
               <span className="truncate font-mono text-xs" title={dir}>
                 {shortenPath(dir)}
               </span>
-              <button
-                type="button"
+              <IconButton
+                size="compact"
+                variant="quiet"
                 onClick={() => removeExcluded(i)}
                 aria-label="Remove excluded folder"
-                className="ml-2 text-muted hover:text-destructive"
+                className="ml-2"
               >
                 <X className="h-4 w-4" />
-              </button>
+              </IconButton>
             </li>
           ))}
         </ul>
@@ -479,81 +557,220 @@ function ExcludedPathsSection({
   )
 }
 
-function SettingsFooter({
-  saving,
-  save,
-  version,
-}: {
-  saving: boolean
-  save: () => void
-  version: string
-}) {
-  return (
-    <div className="flex items-center justify-between border-t border-border px-6 py-3">
-      <button
-        type="button"
-        onClick={save}
-        disabled={saving}
-        className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
-      >
-        {saving ? 'Saving…' : 'Save changes'}
-      </button>
-      {version && <span className="text-xs text-muted">v{version}</span>}
-    </div>
-  )
+type SettingsModel = ReturnType<typeof useSettings>
+
+function connectionStatus(connection: PullRequestLookup): string {
+  switch (connection.state) {
+    case 'error':
+      return connection.error?.message ?? 'Provider check failed.'
+    case 'none':
+      return 'Connected. No pull request was found for the checked branch.'
+    case 'found':
+      return 'Connected. Pull request found.'
+    case 'not-configured':
+      return 'No provider is configured for this project.'
+    default:
+      return 'This branch does not need a pull request lookup.'
+  }
 }
 
-function SettingsForm() {
-  const s = useSettings()
-
+function GeneralSettingsContent({ s }: { s: SettingsModel }) {
   return (
-    <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
-      <TitleBar
-        title="Settings"
-        trailing={
+    <>
+      <AppearanceSection theme={s.theme} previewTheme={s.previewTheme} />
+      <DefaultEditorSection
+        editor={s.editor}
+        setEditor={s.setEditor}
+        editorOptions={s.editorOptions}
+      />
+      <DefaultTerminalSection terminal={s.terminal} setTerminal={s.setTerminal} />
+      <section className="border-t border-border pt-5" aria-labelledby="settings-about-title">
+        <h2
+          id="settings-about-title"
+          className="text-xs font-semibold uppercase tracking-wider text-muted"
+        >
+          About
+        </h2>
+        <p className="mt-2 text-xs text-muted">
+          Worktree Manager{s.version ? ` · v${s.version}` : ''} · Made by{' '}
           <button
             type="button"
-            onClick={s.goBack}
-            className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1.5 text-xs font-medium hover:bg-accent"
+            onClick={() => void api.openExternal('https://clubtidy.fr')}
+            className="text-primary underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
           >
-            <ArrowLeft className="h-3.5 w-3.5" />
-            Back
+            ClubTidy
           </button>
-        }
-      />
-
-      <div className="flex-1 overflow-auto p-6">
-        <div className="mx-auto max-w-xl space-y-8">
-          <AppearanceSection theme={s.theme} previewTheme={s.previewTheme} />
-          <DefaultEditorSection
-            editor={s.editor}
-            setEditor={s.setEditor}
-            editorOptions={s.editorOptions}
-          />
-          <DefaultTerminalSection terminal={s.terminal} setTerminal={s.setTerminal} />
-          <ProviderTokensSection
-            githubToken={s.githubToken}
-            setGithubToken={s.setGithubToken}
-            azureToken={s.azureToken}
-            setAzureToken={s.setAzureToken}
-            detecting={s.detecting}
-            detect={s.detect}
-            tokenMsg={s.tokenMsg}
-          />
-          <WatchedDirectoriesSection dirs={s.dirs} addDir={s.addDir} removeDir={s.removeDir} />
-          <ExcludedPathsSection
-            excluded={s.excluded}
-            addExcluded={s.addExcluded}
-            removeExcluded={s.removeExcluded}
-          />
-        </div>
-      </div>
-
-      <SettingsFooter saving={s.saving} save={s.save} version={s.version} />
-    </div>
+        </p>
+      </section>
+    </>
   )
 }
 
-export function Settings() {
-  return <SettingsForm />
+function ConnectionSettingsContent({ s }: { s: SettingsModel }) {
+  return (
+    <>
+      <ProviderTokensSection
+        githubToken={s.githubToken}
+        setGithubToken={s.setGithubToken}
+        azureToken={s.azureToken}
+        setAzureToken={s.setAzureToken}
+        detecting={s.detecting}
+        detect={s.detect}
+        tokenMsg={s.tokenMsg}
+      />
+      <section className="rounded-xl border border-border bg-card p-4">
+        <h2 className="text-sm font-semibold">Check provider connection</h2>
+        <p className="mt-1 text-xs text-muted">
+          Checks the effective credential for one project. Save token changes before checking.
+        </p>
+        <div className="mt-3 flex gap-2">
+          <Select
+            value={s.connectionRepoId}
+            onChange={(event) => s.setConnectionRepoId(event.target.value)}
+            aria-label="Project to check"
+          >
+            <option value="">Select a project</option>
+            {s.repositories.map((repo) => (
+              <option key={repo.id} value={repo.id}>
+                {repo.name}
+              </option>
+            ))}
+          </Select>
+          <Button
+            variant="primary"
+            disabled={!s.connectionRepoId}
+            loading={s.checkingConnection}
+            onClick={() => void s.checkConnection()}
+          >
+            {s.checkingConnection ? 'Checking…' : 'Test connection'}
+          </Button>
+        </div>
+        {s.repositories.length === 0 && (
+          <p className="mt-2 text-xs text-muted">
+            Add a project before testing a provider credential.
+          </p>
+        )}
+        {s.connection && (
+          <p role="status" className="mt-3 text-sm text-muted">
+            {connectionStatus(s.connection)}{' '}
+            {s.connection.credentialSource && s.connection.credentialSource !== 'none'
+              ? `Credential: ${s.connection.credentialSource}.`
+              : ''}
+          </p>
+        )}
+      </section>
+    </>
+  )
+}
+
+function WorktreeSettingsContent({ s }: { s: SettingsModel }) {
+  return (
+    <WorktreeCreationDefaults
+      location={s.defaultWorktreeLocation}
+      setLocation={s.setDefaultWorktreeLocation}
+      customParent={s.defaultWorktreeCustomParent}
+      setCustomParent={s.setDefaultWorktreeCustomParent}
+    />
+  )
+}
+
+function ScanningSettingsContent({ s }: { s: SettingsModel }) {
+  return (
+    <>
+      <WatchedDirectoriesSection dirs={s.dirs} addDir={s.addDir} removeDir={s.removeDir} />
+      <ScanSourcesSetting
+        includeAgentWorktrees={s.includeAgentWorktrees}
+        onChange={s.setIncludeAgentWorktrees}
+      />
+      <ExcludedPathsSection
+        excluded={s.excluded}
+        addExcluded={s.addExcluded}
+        removeExcluded={s.removeExcluded}
+      />
+    </>
+  )
+}
+
+function SettingsContent({ section, s }: { section: SettingsSection; s: SettingsModel }) {
+  if (section === 'general') return <GeneralSettingsContent s={s} />
+  if (section === 'connections') return <ConnectionSettingsContent s={s} />
+  if (section === 'worktrees') return <WorktreeSettingsContent s={s} />
+  if (section === 'scanning') return <ScanningSettingsContent s={s} />
+  return null
+}
+
+function SettingsForm({ initialSection }: { initialSection: SettingsSection }) {
+  const s = useSettings()
+  const [section, setSection] = useState<SettingsSection>(initialSection)
+
+  return (
+    <Dialog
+      titleId="app-settings-title"
+      onClose={s.goBack}
+      canClose={!s.saving && !s.showUnsaved}
+      size="wide"
+      initialFocus={`#app-settings-tab-${initialSection}`}
+    >
+      <div className="flex max-h-[90vh] min-h-0 flex-col overflow-hidden">
+        <div className="flex shrink-0 items-center justify-between border-b border-border px-6 py-4">
+          <h2 id="app-settings-title" className="text-lg font-semibold">
+            Settings
+          </h2>
+          <IconButton
+            onClick={s.goBack}
+            variant="quiet"
+            aria-label="Close settings"
+            disabled={s.saving}
+          >
+            <X className="h-5 w-5" />
+          </IconButton>
+        </div>
+
+        <SettingsTabs
+          tabs={sectionTabs}
+          section={section}
+          onChange={setSection}
+          prefix="app-settings"
+          label="Settings sections"
+        />
+
+        <div
+          id="app-settings-panel"
+          role="tabpanel"
+          aria-labelledby={`app-settings-tab-${section}`}
+          tabIndex={0}
+          className="min-h-0 flex-1 space-y-6 overflow-y-auto overflow-x-hidden px-6 py-6"
+        >
+          <SettingsContent section={section} s={s} />
+        </div>
+
+        {s.saveError && !s.showUnsaved && (
+          <p role="alert" className="px-6 pb-2 text-sm text-destructive">
+            {s.saveError}
+          </p>
+        )}
+        <div className="flex shrink-0 justify-end gap-2 border-t border-border px-6 py-4">
+          <Button onClick={s.goBack} disabled={s.saving}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={() => void s.save()} loading={s.saving}>
+            Save changes
+          </Button>
+        </div>
+      </div>
+      {s.showUnsaved && (
+        <UnsavedChangesDialog
+          onKeep={() => s.setShowUnsaved(false)}
+          onDiscard={s.discardChanges}
+          onSave={() => void s.save()}
+          saving={s.saving}
+          error={s.saveError}
+        />
+      )}
+    </Dialog>
+  )
+}
+
+export function Settings({ initialSection = 'general' }: { initialSection?: SettingsSection }) {
+  return <SettingsForm initialSection={initialSection} />
 }

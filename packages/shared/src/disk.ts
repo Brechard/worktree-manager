@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs'
 import { lstat, readdir, rm } from 'node:fs/promises'
 import { platform } from 'node:os'
-import { basename, isAbsolute, join, relative, resolve } from 'node:path'
+import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { ReclaimableEntry, ReclaimableKind } from '@worktree/contracts'
 import { runCommand, runGit } from './exec.js'
 
@@ -120,6 +120,81 @@ async function measurePathPortable(root: string): Promise<number> {
   return bytes
 }
 
+export interface PortableWorktreeMeasurement {
+  totalBytes: number
+  reclaimableBytesByPath: Map<string, number>
+}
+
+/**
+ * Measure a worktree and its ignored, allow-listed subtrees in one traversal.
+ * Candidate paths are rechecked for containment and the generated-directory
+ * allow-list. Symlinks count as links and are never followed.
+ */
+export async function measureWorktreeDiskPortable(
+  worktreePath: string,
+  candidateRelativePaths: string[]
+): Promise<PortableWorktreeMeasurement> {
+  const root = resolve(worktreePath)
+  const candidates = candidateRelativePaths
+    .map((relativePath) => ({
+      relativePath,
+      absolutePath: resolve(root, relativePath),
+    }))
+    .filter(({ relativePath, absolutePath }) => {
+      if (!relativePath || isAbsolute(relativePath) || kindFor(relativePath) === undefined)
+        return false
+      const fromRoot = relative(root, absolutePath)
+      return (
+        fromRoot !== '' &&
+        fromRoot !== '..' &&
+        !fromRoot.startsWith(`..${sep}`) &&
+        !isAbsolute(fromRoot)
+      )
+    })
+    .sort((a, b) => a.relativePath.length - b.relativePath.length)
+    .filter((candidate, index, all) =>
+      all
+        .slice(0, index)
+        .every(({ relativePath }) => !candidate.relativePath.startsWith(`${relativePath}/`))
+    )
+
+  const candidateByAbsolutePath = new Map(
+    candidates.map(({ absolutePath, relativePath }) => [absolutePath, relativePath])
+  )
+  const reclaimableBytesByPath = new Map(candidates.map(({ relativePath }) => [relativePath, 0]))
+  const pending: Array<{ path: string; candidateRelativePath?: string }> = [{ path: root }]
+  let totalBytes = 0
+
+  while (pending.length > 0) {
+    const item = pending.pop()!
+    const candidateRelativePath =
+      item.candidateRelativePath ?? candidateByAbsolutePath.get(item.path)
+    const info = await lstat(item.path)
+
+    // A symlink's target is not owned by this worktree.
+    if (!info.isDirectory() || info.isSymbolicLink()) {
+      totalBytes += info.size
+      if (candidateRelativePath !== undefined) {
+        reclaimableBytesByPath.set(
+          candidateRelativePath,
+          (reclaimableBytesByPath.get(candidateRelativePath) ?? 0) + info.size
+        )
+      }
+      continue
+    }
+
+    const entries = await readdir(item.path, { withFileTypes: true })
+    for (const entry of entries) {
+      pending.push({
+        path: join(item.path, entry.name),
+        ...(candidateRelativePath === undefined ? {} : { candidateRelativePath }),
+      })
+    }
+  }
+
+  return { totalBytes, reclaimableBytesByPath }
+}
+
 /**
  * Size of each path. Unix uses one `du` per batch; Windows uses a Node walker.
  *
@@ -179,21 +254,36 @@ export async function measureWorktreeDisk(worktreePath: string): Promise<Worktre
       )
       .sort()
 
-    const sizes = await measurePaths([
-      worktreePath,
-      ...reclaimable.map((relativePath) => join(worktreePath, relativePath)),
-    ])
+    let totalBytes: number
+    let reclaimableBytesByPath: Map<string, number>
+    if (platform() === 'win32') {
+      const portable = await measureWorktreeDiskPortable(worktreePath, reclaimable)
+      totalBytes = portable.totalBytes
+      reclaimableBytesByPath = portable.reclaimableBytesByPath
+    } else {
+      const sizes = await measurePaths([
+        worktreePath,
+        ...reclaimable.map((relativePath) => join(worktreePath, relativePath)),
+      ])
+      totalBytes = sizes.get(worktreePath) ?? 0
+      reclaimableBytesByPath = new Map(
+        reclaimable.map((relativePath) => [
+          relativePath,
+          sizes.get(join(worktreePath, relativePath)) ?? 0,
+        ])
+      )
+    }
 
     const entries: ReclaimableEntry[] = []
     for (const relativePath of reclaimable) {
-      const bytes = sizes.get(join(worktreePath, relativePath))
+      const bytes = reclaimableBytesByPath.get(relativePath)
       if (bytes === undefined || bytes === 0) continue
       entries.push({ path: relativePath, kind: kindFor(relativePath)!, bytes })
     }
     entries.sort((a, b) => b.bytes - a.bytes)
 
     return {
-      totalBytes: sizes.get(worktreePath) ?? 0,
+      totalBytes,
       reclaimableBytes: entries.reduce((sum, entry) => sum + entry.bytes, 0),
       entries,
     }
@@ -241,7 +331,9 @@ export async function reclaimWorktreeSpace(
     }
     if (!existsSync(absolute)) continue
 
-    const ignored = await runGit(worktreePath, ['check-ignore', '-q', '--', inside])
+    // Test the ignore patterns independently from the index. A force-added
+    // descendant must still be caught by the tracked-file check below.
+    const ignored = await runGit(worktreePath, ['check-ignore', '-q', '--no-index', '--', inside])
     if (ignored.exitCode !== 0) {
       result.errors.push(`${relativePath}: git does not ignore this, so it was kept.`)
       continue

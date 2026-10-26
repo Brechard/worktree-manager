@@ -108,7 +108,16 @@ export async function runShellCommand(
         const exitCode = (error as NodeJS.ErrnoException & { code?: number }).code
         settle({
           success: false,
-          output: output || error.message,
+          // Node's error.message includes the full `shell -lc <command>`.
+          // Setup commands may contain literal credentials, so never persist
+          // or display that fallback when the process produced no output.
+          output:
+            output ||
+            (killed
+              ? `Command timed out after ${Math.round(timeout / 1000)} seconds.`
+              : typeof exitCode === 'number'
+                ? `Command exited with status ${exitCode}.`
+                : 'Command could not start.'),
           ...(typeof exitCode === 'number' ? { exitCode } : {}),
           ...(killed ? { timedOut: true } : {}),
         })

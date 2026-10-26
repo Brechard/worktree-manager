@@ -1,73 +1,66 @@
 @import 'tailwindcss';
 
-/*
- * Default palette: Tokyo Night (deepened), an MIT-licensed open-source dark theme.
- * https://github.com/tokyo-night/tokyo-night-vscode-theme
- */
+/* Colors follow the ClubTidy Code theme palette. */
 @theme {
-  --color-primary: #7aa2f7;
-  --color-primary-foreground: #0a0b10;
-  --color-destructive: #f7768e;
-  --color-destructive-foreground: #0a0b10;
-  --color-success: #9ece6a;
-  --color-warning: #e0af68;
-  /* Tokyo Night purple — "merged" (done / safe to delete). */
-  --color-merged: #bb9af7;
-  /* Tokyo Night cyan — "primary" (the main worktree). */
-  --color-highlight: #7dcfff;
-  --color-muted: #6f77a0;
-  --color-background: #0a0b0f;
-  --color-foreground: #c6ccf0;
-  --color-card: #111219;
-  --color-border: #21232f;
-  --color-sidebar: #07080c;
-  --color-accent: #191b27;
-  --color-row-hover: #13141d;
+  --color-primary: oklch(0.733109 0.166058 43.976);
+  --color-primary-foreground: oklch(0.204627 0 0);
+  --color-destructive: oklch(0.702184 0.189226 22.228);
+  --color-destructive-foreground: oklch(0.204627 0 0);
+  --color-success: oklch(0.75 0.12 150);
+  --color-warning: oklch(0.829017 0.171221 81.038);
+  --color-merged: oklch(0.75 0.12 150);
+  --color-highlight: oklch(0.733109 0.166058 43.976);
+  --color-muted: oklch(0.752017 0.02262 65.216);
+  --color-background: oklch(0.204627 0 0);
+  --color-foreground: oklch(0.96446 0.009312 113.16);
+  --color-card: oklch(0.237281 0.007287 67.465);
+  --color-border: oklch(0.325373 0.013447 67.325);
+  --color-sidebar: oklch(0.183791 0.00518 67.497);
+  --color-accent: oklch(0.286617 0.014888 62.791);
+  --color-row-hover: oklch(0.286617 0.014888 62.791);
 }
 
 :root {
   color-scheme: dark;
 }
-
-/* Light palette (Tokyo Night Day inspired). */
 :root[data-theme='light'] {
   color-scheme: light;
-  --color-primary: #2e7de9;
-  --color-primary-foreground: #ffffff;
-  --color-destructive: #f52a65;
-  --color-destructive-foreground: #ffffff;
-  --color-success: #587539;
-  --color-warning: #8c6c3e;
-  --color-merged: #9854f1;
-  --color-highlight: #007197;
-  --color-muted: #6a7089;
-  --color-background: #e9eaf0;
-  --color-foreground: #2a2e3f;
-  --color-card: #ffffff;
-  --color-border: #d3d7e2;
-  --color-sidebar: #e1e3ea;
-  --color-accent: #d9deef;
-  --color-row-hover: #eef0f6;
+  --color-primary: oklch(0.543384 0.155762 40.265);
+  --color-primary-foreground: #fff;
+  --color-destructive: oklch(0.509494 0.208583 28.513);
+  --color-destructive-foreground: #fff;
+  --color-success: oklch(0.46 0.12 150);
+  --color-warning: oklch(0.557046 0.158291 45.359);
+  --color-merged: oklch(0.46 0.12 150);
+  --color-highlight: oklch(0.543384 0.155762 40.265);
+  --color-muted: oklch(0.511723 0.025972 67.191);
+  --color-background: oklch(0.96446 0.009312 113.16);
+  --color-foreground: oklch(0.259136 0.009497 67.388);
+  --color-card: oklch(0.994743 0.004503 78.298);
+  --color-border: oklch(0.868589 0.016344 82.791);
+  --color-sidebar: oklch(0.927156 0.017751 81.33);
+  --color-accent: oklch(0.927156 0.017751 81.33);
+  --color-row-hover: oklch(0.943892 0.022688 78.217);
 }
-
-/* "System" follows the OS preference. */
 @media (prefers-color-scheme: light) {
   :root[data-theme='system'] {
     color-scheme: light;
-    --color-primary: #2e7de9;
-    --color-primary-foreground: #ffffff;
-    --color-destructive: #f52a65;
-    --color-destructive-foreground: #ffffff;
-    --color-success: #587539;
-    --color-warning: #8c6c3e;
-    --color-muted: #6a7089;
-    --color-background: #e9eaf0;
-    --color-foreground: #2a2e3f;
-    --color-card: #ffffff;
-    --color-border: #d3d7e2;
-    --color-sidebar: #e1e3ea;
-    --color-accent: #d9deef;
-    --color-row-hover: #eef0f6;
+    --color-primary: oklch(0.543384 0.155762 40.265);
+    --color-primary-foreground: #fff;
+    --color-destructive: oklch(0.509494 0.208583 28.513);
+    --color-destructive-foreground: #fff;
+    --color-success: oklch(0.46 0.12 150);
+    --color-warning: oklch(0.557046 0.158291 45.359);
+    --color-merged: oklch(0.46 0.12 150);
+    --color-highlight: oklch(0.543384 0.155762 40.265);
+    --color-muted: oklch(0.511723 0.025972 67.191);
+    --color-background: oklch(0.96446 0.009312 113.16);
+    --color-foreground: oklch(0.259136 0.009497 67.388);
+    --color-card: oklch(0.994743 0.004503 78.298);
+    --color-border: oklch(0.868589 0.016344 82.791);
+    --color-sidebar: oklch(0.927156 0.017751 81.33);
+    --color-accent: oklch(0.927156 0.017751 81.33);
+    --color-row-hover: oklch(0.943892 0.022688 78.217);
   }
 }
 
@@ -96,6 +89,7 @@ body {
   color: var(--color-foreground);
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
+  overscroll-behavior: contain;
 }
 
 button {
@@ -132,4 +126,266 @@ button:disabled {
   border-radius: 999px;
   border: 2px solid transparent;
   background-clip: content-box;
+}
+
+button:focus-visible,
+[role='button']:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+/* The wiping edge and bubbles make a confirmed removal read as cleaning. */
+.worktree-removing {
+  position: relative;
+  overflow: hidden;
+  pointer-events: none;
+  animation: sweep-away 240ms cubic-bezier(0.22, 0.75, 0.35, 1) both;
+}
+.worktree-removing::after {
+  content: '';
+  position: absolute;
+  z-index: 2;
+  inset: -20% auto -20% 0;
+  width: 34px;
+  border-right: 5px solid var(--color-primary);
+  border-radius: 30% 60% 60% 30%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--color-primary) 11%, var(--color-card))
+  );
+  box-shadow:
+    9px 0 0 -6px var(--color-card),
+    16px -8px 0 -13px var(--color-primary),
+    20px 16px 0 -15px var(--color-primary);
+  transform: translateX(-45px) rotate(7deg);
+  animation: cleaning-wipe 230ms ease-out both;
+}
+.worktree-removing::before {
+  content: '';
+  position: absolute;
+  z-index: 3;
+  top: 22%;
+  left: 0;
+  width: 76px;
+  height: 72px;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 24% 65%, transparent 5px, var(--color-primary) 6px, transparent 7px),
+    radial-gradient(circle at 58% 22%, transparent 3px, var(--color-primary) 4px, transparent 5px),
+    radial-gradient(circle at 80% 72%, transparent 2px, var(--color-primary) 3px, transparent 4px);
+  opacity: 0.8;
+  transform: translateX(-100px);
+  animation: cleaning-wipe 230ms ease-out both;
+}
+@keyframes cleaning-wipe {
+  to {
+    transform: translateX(calc(100vw + 45px)) rotate(7deg);
+  }
+}
+@keyframes sweep-away {
+  0%,
+  42% {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .worktree-removing {
+    animation-duration: 1ms;
+  }
+  .worktree-removing::after {
+    display: none;
+  }
+  .worktree-removing::before {
+    display: none;
+  }
+}
+
+/* Shared renderer controls. Keep sizing and interaction states at one seam. */
+.ui-button {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 14px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+  white-space: nowrap;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease,
+    scale 120ms ease;
+}
+.ui-button--default {
+  height: 36px;
+}
+.ui-button--compact {
+  height: 32px;
+  padding-inline: 11px;
+  font-size: 13px;
+}
+.ui-button--segment {
+  height: 36px;
+  border: 0;
+  border-radius: 0;
+}
+.ui-button--segment + .ui-button--segment {
+  border-left: 1px solid color-mix(in srgb, var(--color-primary) 30%, transparent);
+}
+.ui-button--primary {
+  background: var(--color-primary);
+  color: var(--color-primary-foreground);
+}
+.ui-button--primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-primary) 86%, var(--color-foreground));
+}
+.ui-button--neutral {
+  background: var(--color-background);
+  border-color: var(--color-border);
+  color: var(--color-foreground);
+}
+.ui-button--neutral:hover:not(:disabled) {
+  background: var(--color-accent);
+}
+.ui-button--softPrimary {
+  background: color-mix(in srgb, var(--color-primary) 10%, var(--color-card));
+  border-color: color-mix(in srgb, var(--color-primary) 45%, var(--color-border));
+  color: var(--color-primary);
+}
+.ui-button--softPrimary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-primary) 18%, var(--color-card));
+}
+.ui-button--softWarning {
+  background: color-mix(in srgb, var(--color-warning) 10%, var(--color-card));
+  border-color: color-mix(in srgb, var(--color-warning) 45%, var(--color-border));
+  color: var(--color-warning);
+}
+.ui-button--softWarning:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-warning) 18%, var(--color-card));
+}
+.ui-button--danger {
+  background: var(--color-destructive);
+  color: var(--color-destructive-foreground);
+}
+.ui-button--danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-destructive) 86%, var(--color-foreground));
+}
+.ui-button--quiet {
+  color: var(--color-muted);
+}
+.ui-button--quiet:hover:not(:disabled) {
+  background: var(--color-accent);
+  color: var(--color-foreground);
+}
+.ui-button:active:not(:disabled) {
+  scale: 0.96;
+}
+.ui-button:disabled {
+  opacity: 0.5;
+}
+.ui-button > svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+.ui-icon-button {
+  width: 36px;
+  padding: 0;
+  flex: none;
+}
+.ui-icon-button.ui-button--compact {
+  width: 32px;
+  padding: 0;
+}
+.ui-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.ui-field__label {
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 600;
+}
+.ui-field__help {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 12px;
+  line-height: 17px;
+}
+.ui-field__error {
+  margin: 0;
+  color: var(--color-destructive);
+  font-size: 12px;
+  line-height: 17px;
+}
+.ui-input {
+  min-width: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-background);
+  color: var(--color-foreground);
+  padding: 0 11px;
+  font-size: 13px;
+  line-height: 18px;
+  outline: none;
+}
+.ui-input--default {
+  height: 36px;
+}
+.ui-input--compact {
+  height: 32px;
+  font-size: 13px;
+}
+.ui-input:focus-visible {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary) 24%, transparent);
+}
+.ui-input:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.ui-dialog {
+  position: fixed;
+  inset: 0;
+  margin: auto;
+  padding: 0;
+  width: min(var(--ui-dialog-width, 560px), calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
+  max-height: min(90vh, calc(100vh - 32px));
+  border: 1px solid var(--color-border);
+  border-radius: 16px;
+  background: var(--color-card);
+  color: var(--color-foreground);
+  box-shadow: 0 24px 60px color-mix(in srgb, black 35%, transparent);
+  overflow: hidden;
+  overscroll-behavior: contain;
+}
+.ui-dialog--compact {
+  --ui-dialog-width: 440px;
+}
+.ui-dialog--standard {
+  --ui-dialog-width: 560px;
+}
+.ui-dialog--wide {
+  --ui-dialog-width: 760px;
+}
+.ui-dialog::backdrop {
+  background: rgb(0 0 0 / 55%);
+}
+@media (prefers-reduced-motion: reduce) {
+  .ui-button {
+    transition: none;
+  }
+  .ui-button:active:not(:disabled) {
+    scale: none;
+  }
 }

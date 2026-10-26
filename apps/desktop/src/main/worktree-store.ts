@@ -64,6 +64,7 @@ export function createWorktreeStore(path: string) {
                   ...item,
                   postCreateSetup: old.postCreateSetup,
                   postCreateSetupState: old.postCreateSetupState,
+                  postCreateCommandOverride: old.postCreateCommandOverride,
                 }
               : item
           })

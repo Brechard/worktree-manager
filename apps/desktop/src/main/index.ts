@@ -53,6 +53,7 @@ import {
   previewWorktreeCreation,
   createGitWorktree,
   runPostCreateSetup,
+  setupCommandForWorktree,
   syncWithBase,
   toRepositoryBaseStatus,
   updateBaseBranch,
@@ -626,7 +627,7 @@ ipcMain.handle(
       if (!created.worktree)
         return { success: false, error: created.error ?? 'Git could not create the worktree.' }
       const worktree = created.worktree
-      if (repository.postCreateCommand?.trim()) worktree.postCreateSetupState = 'running'
+      if (setupCommandForWorktree(repository, worktree)) worktree.postCreateSetupState = 'running'
       progress('saving', 'Adding worktree to the project…')
       try {
         await worktreeStore.upsertCreated(worktree)
@@ -639,7 +640,7 @@ ipcMain.handle(
       }
       progress('registered', 'Worktree created and available.', undefined, worktree)
       let setup
-      if (repository.postCreateCommand?.trim()) {
+      if (setupCommandForWorktree(repository, worktree)) {
         const key = `${repository.id}:${worktree.id}`
         activeSetups.add(key)
         progress('setup', 'Running project setup…', undefined, worktree)
@@ -699,8 +700,8 @@ ipcMain.handle(
       )
       if (!repository || !worktree)
         return { success: false, output: 'Registered worktree or project was not found.' }
-      if (!repository.postCreateCommand?.trim())
-        return { success: false, output: 'Configure a setup command in Project settings first.' }
+      if (!setupCommandForWorktree(repository, worktree))
+        return { success: false, output: 'No setup command is configured for this worktree.' }
       worktree.postCreateSetupState = 'running'
       await worktreeStore.update(worktree.id, { postCreateSetupState: 'running' })
       creationProgress(event, {

@@ -11,7 +11,6 @@ import {
   ArrowDownUp,
   Clock3,
   ShieldCheck,
-  HardDrive,
   Trash2,
 } from 'lucide-react'
 import type {
@@ -27,6 +26,7 @@ import type {
 import { formatBytes } from '@worktree/contracts'
 import { useAppStore } from '../store'
 import { useDashboard, defaultDirectionFor } from '../hooks/useDashboard'
+import { useDashboardShortcuts } from '../hooks/useDashboardShortcuts'
 import { api } from '../api'
 import { WorktreeRow } from './WorktreeRow'
 import type { ProjectCatchUp } from '../lib/catchUp'
@@ -39,6 +39,8 @@ import { TitleBar } from './TitleBar'
 import { BaseBranchStatus } from './BaseBranchStatus'
 import { ProviderHealth } from './ProviderHealth'
 import { CleaningArtwork } from './CleaningArtwork'
+import { ProjectDiskControl } from './ProjectDiskControl'
+import { summarizeProjectDisk, type ProjectDiskSummary } from '../lib/projectDisk'
 const appIcon = new URL('../../../../resources/icon.png', import.meta.url).href
 import { cn } from '../lib/utils'
 import { Button } from './ui/Button'
@@ -231,7 +233,11 @@ interface DashboardProjectHeaderProps {
   editorOptions: EditorOption[]
   editorIcons: Record<string, string>
   /** Totals across the project's worktrees, and how much of it is generated. */
-  disk: { totalBytes: number; reclaimableBytes: number; measuring: boolean }
+  disk: ProjectDiskSummary
+  worktrees: Worktree[]
+  diskUsage: Record<string, WorktreeDiskUsage>
+  measuringIds: Set<string>
+  reclaimSpace: (worktree: Worktree) => void
   cleanupSummary: { ready: number; review: number; bytes: number; measuring: boolean }
   openCleanupCandidates: () => void
   remeasureDisk: () => void
@@ -251,6 +257,10 @@ function DashboardProjectHeader({
   editorOptions,
   editorIcons,
   disk,
+  worktrees,
+  diskUsage,
+  measuringIds,
+  reclaimSpace,
   cleanupSummary,
   openCleanupCandidates,
   remeasureDisk,
@@ -299,7 +309,11 @@ function DashboardProjectHeader({
           <Plus className="h-3.5 w-3.5" /> New worktree
         </Button>
         <ProjectStorageActions
-          repositoryName={selectedRepo.name}
+          repository={selectedRepo}
+          worktrees={worktrees}
+          diskUsage={diskUsage}
+          measuringIds={measuringIds}
+          reclaimSpace={reclaimSpace}
           setupRunningCount={setupRunningCount}
           disk={disk}
           cleanupSummary={cleanupSummary}
@@ -336,14 +350,22 @@ function DashboardProjectHeader({
 }
 
 function ProjectStorageActions({
-  repositoryName,
+  repository,
+  worktrees,
+  diskUsage,
+  measuringIds,
+  reclaimSpace,
   setupRunningCount,
   disk,
   cleanupSummary,
   remeasureDisk,
   openCleanupCandidates,
 }: {
-  repositoryName: string
+  repository: Repository
+  worktrees: Worktree[]
+  diskUsage: Record<string, WorktreeDiskUsage>
+  measuringIds: Set<string>
+  reclaimSpace: (worktree: Worktree) => void
   setupRunningCount: number
   disk: DashboardProjectHeaderProps['disk']
   cleanupSummary: DashboardProjectHeaderProps['cleanupSummary']
@@ -362,37 +384,15 @@ function ProjectStorageActions({
           {setupRunningCount} setup{setupRunningCount === 1 ? '' : 's'} running
         </span>
       )}
-      {/* Every worktree of this project is a full copy of its dependencies
-            and build output, so the project total is the number that explains
-            where the disk went — and the button next to it is what gives it
-            back. */}
-      {(disk.totalBytes > 0 || disk.measuring) && (
-        <Button
-          variant="neutral"
-          onClick={remeasureDisk}
-          className="shrink-0"
-          title={`Every worktree of ${repositoryName}, measured on disk${
-            disk.reclaimableBytes > 0
-              ? `. ${formatBytes(disk.reclaimableBytes)} of it is generated (dependencies, build output) and rebuilds from source.`
-              : '.'
-          }\n\nClick to measure again.`}
-        >
-          {disk.measuring ? (
-            <RefreshCw className="h-3.5 w-3.5 animate-spin text-muted" />
-          ) : (
-            <HardDrive className="h-3.5 w-3.5 text-muted" />
-          )}
-          {/* A partial sum is honest only if it says so — the "+" is what
-                keeps a half-measured project from reading as a small one. */}
-          <span className="font-medium">
-            {formatBytes(disk.totalBytes)}
-            {disk.measuring ? '+' : ''}
-          </span>
-          {disk.reclaimableBytes > 0 && (
-            <span className="text-primary">· {formatBytes(disk.reclaimableBytes)} generated</span>
-          )}
-        </Button>
-      )}
+      <ProjectDiskControl
+        repository={repository}
+        worktrees={worktrees}
+        diskUsage={diskUsage}
+        measuringIds={measuringIds}
+        summary={disk}
+        onRefresh={remeasureDisk}
+        onReclaim={reclaimSpace}
+      />
 
       {cleanupCount > 0 && (
         <Button
@@ -457,6 +457,7 @@ function DashboardControls({
         <div className="relative min-w-[180px] flex-1">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted" />
           <input
+            id="worktree-search"
             type="text"
             placeholder="Search branches or paths…"
             value={search}
@@ -726,7 +727,7 @@ function DashboardEmpty() {
 
 interface DashboardRepositoryContentProps {
   ctx: ReturnType<typeof useDashboard>
-  disk: { totalBytes: number; reclaimableBytes: number; measuring: boolean }
+  disk: ProjectDiskSummary
   editorOptions: EditorOption[]
   editorIcons: Record<string, string>
   catchUp: ProjectCatchUp
@@ -755,6 +756,10 @@ function DashboardRepositoryContent({
         editorOptions={editorOptions}
         editorIcons={editorIcons}
         disk={disk}
+        worktrees={ctx.worktrees.filter((w) => w.repositoryId === selectedRepo.id && !w.prunable)}
+        diskUsage={ctx.diskUsage}
+        measuringIds={ctx.measuringIds}
+        reclaimSpace={(worktree) => void ctx.reclaimSpace(worktree)}
         cleanupSummary={ctx.cleanupSummary}
         openCleanupCandidates={() => ctx.openCleanupCandidates(selectedRepo.id)}
         remeasureDisk={() => {
@@ -852,6 +857,12 @@ export function Dashboard() {
   const [availableEditorIds, setAvailableEditorIds] = useState<string[] | null>(null)
   const [editorIcons, setEditorIcons] = useState<Record<string, string>>({})
 
+  useDashboardShortcuts({
+    selectedRepositoryId: ctx.selectedRepo?.id ?? null,
+    openNewWorktree: setNewWorktreeRepoId,
+    openSettings: ctx.openSettings,
+  })
+
   useEffect(() => {
     let cancelled = false
     api
@@ -912,24 +923,12 @@ export function Dashboard() {
     ctx.catchUpProject,
   ])
 
-  // The project's own footprint: the sum of what its worktrees measured, plus
-  // whether anything is still being counted so the number can say so.
+  // Keep failed and pending worktrees out of the estimated total, and show
+  // partial measurements explicitly.
   const disk = useMemo(() => {
-    let totalBytes = 0
-    let reclaimableBytes = 0
-    let measuring = false
-    for (const w of ctx.worktrees) {
-      if (w.repositoryId !== selectedRepoId || w.prunable) continue
-      const usage = ctx.diskUsage[w.id]
-      if (!usage) {
-        measuring = true
-        continue
-      }
-      totalBytes += usage.totalBytes
-      reclaimableBytes += usage.reclaimableBytes
-    }
-    return { totalBytes, reclaimableBytes, measuring }
-  }, [selectedRepoId, ctx.worktrees, ctx.diskUsage])
+    const worktrees = ctx.worktrees.filter((w) => w.repositoryId === selectedRepoId && !w.prunable)
+    return summarizeProjectDisk(worktrees, ctx.diskUsage, ctx.measuringIds)
+  }, [selectedRepoId, ctx.worktrees, ctx.diskUsage, ctx.measuringIds])
 
   useEffect(() => {
     const editorIds = editorOptions.map((option) => option.id)

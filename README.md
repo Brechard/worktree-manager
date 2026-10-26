@@ -16,9 +16,7 @@ space when work is done.
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)](#install)
 
-[**Download for Mac (Apple silicon)**](https://github.com/Brechard/worktree-manager/releases/download/v0.2.0/Worktree-Manager-0.2.0-macos-arm64.dmg) ·
-[Mac (Intel)](https://github.com/Brechard/worktree-manager/releases/download/v0.2.0/Worktree-Manager-0.2.0-macos-x64.dmg) ·
-[Windows](https://github.com/Brechard/worktree-manager/releases/download/v0.2.0/Worktree-Manager-0.2.0-windows-x64.exe)
+[**Download the latest release**](https://github.com/Brechard/worktree-manager/releases/latest)
 
 [**Install**](#install) ·
 [Features](#features) ·
@@ -77,7 +75,7 @@ every linked worktree underneath. Filter to dirty / unmerged / unpushed / safe, 
 recent activity, search branches and paths, star the projects you live in.
 
 <div align="center">
-<img src="docs/images/settings-light.png" alt="Light Settings popup with General, Connections, Worktrees, and Scanning tabs over the Storefront dashboard" width="820" />
+<img src="docs/images/settings-light.png" alt="Light Settings popup showing General preferences and keyboard shortcuts over the Storefront dashboard" width="820" />
 </div>
 
 ### Pull requests inline
@@ -102,6 +100,18 @@ worktrees and lets you delete them from one place. It's a deliberate allow-list 
 directories a tool can rebuild — never "everything git ignores", which would take your
 `.env` files with it.
 
+Open **Disk usage** in a project header for a per-worktree breakdown. The total and
+generated amounts are allocated-space estimates; generated usage is included in the total
+and covers ignored dependency, build, cache, and test directories identified for review.
+The dialog shows how many worktrees were measured; missing or failed sizes are marked, and
+**Refresh sizes** retries them. Review generated files per worktree; cleanup requires
+confirmation. Shared disk blocks can mean the space actually freed is lower than the
+estimate.
+
+<div align="center">
+<img src="docs/images/disk-usage-light.png" alt="Light Disk usage popup showing 2 MB of generated build and dependency files in a Storefront worktree, with per-worktree estimates and a review action" width="820" />
+</div>
+
 ### Real git actions, not just a list
 
 Rows surface **Publish** for an unpublished branch, **Push** for local commits, and
@@ -117,9 +127,16 @@ Set the default location in the **Settings** popup, or override it in **Project 
 A project setup command can run afterward with `WORKTREE_PATH`, `WORKTREE_BRANCH`,
 `REPO_PATH`, and `REPO_NAME` in its environment. An interrupted or failed setup stays
 visible on the row with **Retry setup**.
+The creation dialog can override that command for one worktree. Checking **Override setup
+command** fills the editor with the project command; edit it, or clear it to skip setup.
+The project setting stays unchanged. **Retry setup** retains a custom override; without
+one, retry uses the current project command.
+
+In the creation dialog, **Enter** or **Shift+Enter** from a single-line field submits the
+current valid preview; **⌘Enter** on macOS or **Ctrl+Enter** elsewhere also submits.
 
 <div align="center">
-<img src="docs/images/new-worktree-light.png" alt="New worktree popup showing a branch name, four location choices, and the destination and starting commit preview" width="820" />
+<img src="docs/images/new-worktree-light.png" alt="New worktree popup showing Storefront branch fields, an edited setup command override, and location choices" width="820" />
 </div>
 
 ### Opens where you work
@@ -132,18 +149,31 @@ terminal or a file manager at the worktree path.
 <img src="docs/images/dashboard-light.png" alt="Light Storefront dashboard showing a new branch ready to Publish, merged and draft pull requests, and a branch with local edits" width="820" />
 </div>
 
+### Keyboard shortcuts
+
+| Action                                | macOS                         | Other platforms                   |
+| ------------------------------------- | ----------------------------- | --------------------------------- |
+| New worktree for the selected project | ⌘N                            | Ctrl+N                            |
+| Focus worktree search                 | ⌘F                            | Ctrl+F                            |
+| Open Settings                         | ⌘,                            | Ctrl+,                            |
+| Create from a single-line field       | Enter, Shift+Enter, or ⌘Enter | Enter, Shift+Enter, or Ctrl+Enter |
+| Close a dialog                        | Esc                           | Esc                               |
+
+Dashboard shortcuts also work while a dashboard field is focused. They are paused while a
+dialog is open, and the same shortcuts are listed in Settings.
+
 ## Install
 
-Download **v0.2.0** from the links below or browse all files on the
+Download the latest release for your system from the
 [GitHub Releases page](https://github.com/Brechard/worktree-manager/releases/latest).
 Git must be installed and available on your `PATH` to manage worktrees.
 
-| System                | Download                                                                                                                    | Install                                                     |
-| --------------------- | --------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| macOS (Apple silicon) | [DMG](https://github.com/Brechard/worktree-manager/releases/download/v0.2.0/Worktree-Manager-0.2.0-macos-arm64.dmg)         | Open the DMG and drag **Worktree Manager** to Applications. |
-| macOS (Intel)         | [DMG](https://github.com/Brechard/worktree-manager/releases/download/v0.2.0/Worktree-Manager-0.2.0-macos-x64.dmg)           | Open the DMG and drag **Worktree Manager** to Applications. |
-| Windows (x64)         | [Installer](https://github.com/Brechard/worktree-manager/releases/download/v0.2.0/Worktree-Manager-0.2.0-windows-x64.exe)   | Run the installer and follow its prompts.                   |
-| Linux (x64)           | [AppImage](https://github.com/Brechard/worktree-manager/releases/download/v0.2.0/Worktree-Manager-0.2.0-linux-x64.AppImage) | Make the AppImage executable, then run it.                  |
+| System                | Asset to choose                              | Install                                                     |
+| --------------------- | -------------------------------------------- | ----------------------------------------------------------- |
+| macOS (Apple silicon) | `Worktree-Manager-<version>-macos-arm64.dmg` | Open the DMG and drag **Worktree Manager** to Applications. |
+| macOS (Intel)         | `Worktree-Manager-<version>-macos-x64.dmg`   | Open the DMG and drag **Worktree Manager** to Applications. |
+| Windows (x64)         | Windows installer (`.exe`)                   | Run the installer and follow its prompts.                   |
+| Linux (x64)           | Linux AppImage                               | Make the AppImage executable, then run it.                  |
 
 The macOS apps are signed with ClubTidy's **Developer ID** and notarized by Apple.
 The Windows installer is currently unsigned, so SmartScreen may show an

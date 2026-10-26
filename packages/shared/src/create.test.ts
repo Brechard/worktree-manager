@@ -3,8 +3,13 @@ import { execFileSync } from 'node:child_process'
 import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { AppSettings, Repository } from '@worktree/contracts'
-import { createGitWorktree, previewWorktreeCreation, runPostCreateSetup } from './create.js'
+import type { AppSettings, Repository, Worktree } from '@worktree/contracts'
+import {
+  createGitWorktree,
+  previewWorktreeCreation,
+  runPostCreateSetup,
+  setupCommandForWorktree,
+} from './create.js'
 
 const fixtures: string[] = []
 const git = (cwd: string, ...args: string[]) =>
@@ -147,6 +152,98 @@ describe('worktree creation', () => {
     repository.postCreateCommand = 'exit 7'
     expect((await runPostCreateSetup(repository, worktree))?.exitCode).toBe(7)
     expect(git(repository.path, 'branch', '--list', 'setup')).toContain('setup')
+  })
+
+  test('setup uses the creation override, including an explicit blank, without changing the project', async () => {
+    const { repository, settings } = await fixture()
+    repository.postCreateCommand = 'printf default > setup.out'
+
+    const inherited = (
+      await createGitWorktree(
+        { repositoryId: 'repo', mode: 'new', branch: 'inherit' },
+        repository,
+        settings
+      )
+    ).worktree!
+    expect(setupCommandForWorktree(repository, inherited)).toBe(repository.postCreateCommand)
+    expect((await runPostCreateSetup(repository, inherited))?.success).toBe(true)
+    expect(await readFile(join(inherited.path, 'setup.out'), 'utf8')).toBe('default')
+
+    const custom = (
+      await createGitWorktree(
+        {
+          repositoryId: 'repo',
+          mode: 'new',
+          branch: 'custom',
+          postCreateCommandOverride: 'printf custom > setup.out',
+        },
+        repository,
+        settings
+      )
+    ).worktree!
+    expect(custom.postCreateCommandOverride).toBe('printf custom > setup.out')
+    expect((await runPostCreateSetup(repository, custom))?.success).toBe(true)
+    expect(await readFile(join(custom.path, 'setup.out'), 'utf8')).toBe('custom')
+
+    const skipped = (
+      await createGitWorktree(
+        {
+          repositoryId: 'repo',
+          mode: 'new',
+          branch: 'skip',
+          postCreateCommandOverride: '',
+        },
+        repository,
+        settings
+      )
+    ).worktree!
+    expect(skipped.postCreateCommandOverride).toBe('')
+    expect(setupCommandForWorktree(repository, skipped)).toBe('')
+    expect(await runPostCreateSetup(repository, skipped)).toBeUndefined()
+    expect(await readFile(join(skipped.path, 'setup.out')).catch(() => null)).toBeNull()
+    expect(repository.postCreateCommand).toBe('printf default > setup.out')
+  })
+
+  test('a failed override retries its original command after the project default changes', async () => {
+    const { repository, settings } = await fixture()
+    repository.postCreateCommand = 'printf default > setup.out'
+    const worktree = (
+      await createGitWorktree(
+        {
+          repositoryId: 'repo',
+          mode: 'new',
+          branch: 'failed',
+          postCreateCommandOverride: 'exit 7',
+        },
+        repository,
+        settings
+      )
+    ).worktree!
+    expect((await runPostCreateSetup(repository, worktree))?.exitCode).toBe(7)
+    repository.postCreateCommand = 'printf changed > setup.out'
+    expect(setupCommandForWorktree(repository, worktree)).toBe('exit 7')
+    expect((await runPostCreateSetup(repository, worktree))?.exitCode).toBe(7)
+    expect(await readFile(join(worktree.path, 'setup.out')).catch(() => null)).toBeNull()
+
+    const inherited = (
+      await createGitWorktree(
+        { repositoryId: 'repo', mode: 'new', branch: 'default-retry' },
+        repository,
+        settings
+      )
+    ).worktree!
+    repository.postCreateCommand = 'printf latest > setup.out'
+    expect((await runPostCreateSetup(repository, inherited))?.success).toBe(true)
+    expect(await readFile(join(inherited.path, 'setup.out'), 'utf8')).toBe('latest')
+  })
+
+  test('keeps the chosen command text but treats whitespace-only overrides as skip', () => {
+    const repository = { postCreateCommand: 'printf default' } as Repository
+    const worktree = { postCreateCommandOverride: '  printf custom\n' } as Worktree
+    expect(setupCommandForWorktree(repository, worktree)).toBe('  printf custom\n')
+    expect(
+      setupCommandForWorktree(repository, { ...worktree, postCreateCommandOverride: ' \n ' })
+    ).toBe('')
   })
 
   test('reuses an unchecked-out local branch and rejects a stale source preview', async () => {

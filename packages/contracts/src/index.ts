@@ -108,6 +108,8 @@ export const createWorktreeRequestSchema = z.object({
   expectedSourceCommit: z.string().optional(),
   location: worktreeLocationSchema.optional(),
   customParent: z.string().optional(),
+  /** Absent inherits project setup; an explicit empty string skips setup. */
+  postCreateCommandOverride: z.string().optional(),
 })
 export type CreateWorktreeRequest = z.infer<typeof createWorktreeRequestSchema>
 export interface WorktreeCreationPreview {
@@ -143,6 +145,8 @@ export const worktreeSchema = z.object({
   repositoryId: z.string(),
   path: z.string(),
   branch: z.string(),
+  /** The setup choice made at creation. Absent follows the project setting on retry. */
+  postCreateCommandOverride: z.string().optional(),
   /** Last post-create setup result, retained when setup fails for retry. */
   postCreateSetup: commandResultSchema.optional(),
   /** Running is persisted so a restart can mark unfinished setup as interrupted. */

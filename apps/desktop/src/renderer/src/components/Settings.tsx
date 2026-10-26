@@ -4,6 +4,7 @@ import { useAppStore } from '../store'
 import type { PullRequestLookup, WorktreeLocation } from '@worktree/contracts'
 import { api } from '../api'
 import { cn } from '../lib/utils'
+import { isMacPlatform, shortcutLabel } from '../lib/dashboardShortcut'
 import {
   editorOptionsForIds,
   sortEditorOptions,
@@ -575,6 +576,7 @@ function connectionStatus(connection: PullRequestLookup): string {
 }
 
 function GeneralSettingsContent({ s }: { s: SettingsModel }) {
+  const mac = isMacPlatform()
   return (
     <>
       <AppearanceSection theme={s.theme} previewTheme={s.previewTheme} />
@@ -584,6 +586,28 @@ function GeneralSettingsContent({ s }: { s: SettingsModel }) {
         editorOptions={s.editorOptions}
       />
       <DefaultTerminalSection terminal={s.terminal} setTerminal={s.setTerminal} />
+      <section className="border-t border-border pt-5" aria-labelledby="settings-shortcuts-title">
+        <h2
+          id="settings-shortcuts-title"
+          className="text-xs font-semibold uppercase tracking-wider text-muted"
+        >
+          Keyboard shortcuts
+        </h2>
+        <dl className="mt-3 grid grid-cols-[1fr_auto] gap-x-6 gap-y-2 text-sm">
+          <dt>New worktree</dt>
+          <dd className="font-mono text-muted">{shortcutLabel('N', mac)}</dd>
+          <dt>Search worktrees</dt>
+          <dd className="font-mono text-muted">{shortcutLabel('F', mac)}</dd>
+          <dt>Settings</dt>
+          <dd className="font-mono text-muted">{shortcutLabel(',', mac)}</dd>
+          <dt>Create from a single-line field</dt>
+          <dd className="font-mono text-muted">
+            Enter, Shift+Enter, or {shortcutLabel('Enter', mac)}
+          </dd>
+          <dt>Close a dialog</dt>
+          <dd className="font-mono text-muted">Esc</dd>
+        </dl>
+      </section>
       <section className="border-t border-border pt-5" aria-labelledby="settings-about-title">
         <h2
           id="settings-about-title"

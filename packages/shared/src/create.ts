@@ -182,6 +182,9 @@ export async function createGitWorktree(
       repositoryId: repository.id,
       path,
       branch: preview.branch,
+      ...(request.postCreateCommandOverride !== undefined
+        ? { postCreateCommandOverride: request.postCreateCommandOverride }
+        : {}),
       headCommit,
       isMain: false,
       lastModified: Date.now(),
@@ -191,8 +194,13 @@ export async function createGitWorktree(
   }
 }
 
+export function setupCommandForWorktree(repository: Repository, worktree: Worktree): string {
+  const command = worktree.postCreateCommandOverride ?? repository.postCreateCommand ?? ''
+  return command.trim() ? command : ''
+}
+
 export async function runPostCreateSetup(repository: Repository, worktree: Worktree) {
-  const command = repository.postCreateCommand?.trim()
+  const command = setupCommandForWorktree(repository, worktree)
   if (!command) return undefined
   const entries = await getWorktreeList(repository.path)
   const registered = entries.some(

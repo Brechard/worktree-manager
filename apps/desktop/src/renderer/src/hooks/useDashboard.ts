@@ -451,8 +451,18 @@ export function useDashboard(): UseDashboardReturn {
         if (isCurrent() && useAppStore.getState().worktrees.some((w) => w.id === worktree.id)) {
           setDiskUsage(usage)
         }
-      } catch {
-        // A size we could not measure is a missing badge, not an error banner.
+      } catch (error) {
+        if (isCurrent() && useAppStore.getState().worktrees.some((w) => w.id === worktree.id)) {
+          setDiskUsage({
+            worktreeId: worktree.id,
+            path: worktree.path,
+            totalBytes: 0,
+            reclaimableBytes: 0,
+            entries: [],
+            measuredAt: Date.now(),
+            error: String(error),
+          })
+        }
       } finally {
         if (isCurrent()) setMeasuringIds((ids) => toggleId(ids, worktree.id, false))
       }

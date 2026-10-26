@@ -1,4 +1,12 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+  type KeyboardEvent,
+  type ReactNode,
+} from 'react'
 import { Dialog } from './ui/Dialog'
 import { Button, IconButton } from './ui/Button'
 import { Field, TextInput } from './ui/Field'
@@ -15,6 +23,8 @@ import type {
 } from '@worktree/contracts'
 import { api } from '../api'
 import { useAppStore } from '../store'
+import { isMacPlatform, shortcutLabel } from '../lib/dashboardShortcut'
+import { ShellEditor } from './ShellEditor'
 
 interface NewWorktreeModalProps {
   repository: Repository
@@ -42,6 +52,10 @@ interface CreationFormProps {
   setLocation: (location: WorktreeLocation) => void
   customParent: string
   setCustomParent: (path: string) => void
+  overrideSetup: boolean
+  setOverrideSetup: (override: boolean) => void
+  overrideCommand: string
+  setOverrideCommand: (command: string) => void
   busy: boolean
   preview: WorktreeCreationPreview | null
   chooseParent: () => Promise<void>
@@ -60,6 +74,10 @@ function CreationForm({
   setLocation,
   customParent,
   setCustomParent,
+  overrideSetup,
+  setOverrideSetup,
+  overrideCommand,
+  setOverrideCommand,
   busy,
   preview,
   chooseParent,
@@ -117,6 +135,52 @@ function CreationForm({
           </datalist>
         </Field>
       )}
+      <fieldset disabled={busy} className="space-y-3">
+        <legend className="sr-only">Setup after creation</legend>
+        <label
+          className="flex min-h-10 cursor-pointer items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm"
+          htmlFor="create-override-setup"
+        >
+          <input
+            id="create-override-setup"
+            type="checkbox"
+            checked={overrideSetup}
+            onChange={(event) => setOverrideSetup(event.target.checked)}
+            className="h-4 w-4 shrink-0 accent-primary"
+          />
+          <span>Override setup command</span>
+          <span className="ml-auto text-right text-xs text-muted">
+            {overrideSetup
+              ? overrideCommand.trim()
+                ? 'Custom command'
+                : 'Skip setup'
+              : repository.postCreateCommand?.trim()
+                ? 'Uses project default'
+                : 'No setup command'}
+          </span>
+        </label>
+        {overrideSetup && (
+          <div className="space-y-2">
+            <label htmlFor="create-setup-command" className="block text-xs font-medium">
+              Setup command
+            </label>
+            <ShellEditor
+              id="create-setup-command"
+              label="Setup command for this worktree"
+              className="h-32"
+              value={overrideCommand}
+              onChange={setOverrideCommand}
+              placeholder="Leave empty to skip setup"
+            />
+            <p className="text-xs text-muted">
+              {repository.postCreateCommand?.trim()
+                ? 'Starts with the project command. Leave it empty to skip setup for this worktree.'
+                : 'No project command is configured. Enter one here or leave it empty to skip setup.'}{' '}
+              Project settings stay unchanged. Enter adds a line in the editor.
+            </p>
+          </div>
+        )}
+      </fieldset>
       <fieldset className="space-y-2">
         <legend className="mb-2 text-sm font-medium">Location</legend>
         {locations.map((option) => (
@@ -179,12 +243,6 @@ function CreationForm({
       {preview?.error && (
         <p role="alert" className="text-sm text-destructive">
           {preview.error}
-        </p>
-      )}
-      {repository.postCreateCommand?.trim() && (
-        <p className="text-xs text-muted">
-          After creation, the configured project setup command runs in the new worktree. You can
-          retry it if it fails.
         </p>
       )}
     </>
@@ -286,34 +344,33 @@ async function openCreatedWorktree(
 }
 
 function useCreationPreview(request: CreateWorktreeRequest, hasWorktree: boolean) {
-  const [preview, setPreview] = useState<WorktreeCreationPreview | null>(null)
-  const [checking, setChecking] = useState(false)
+  const [resolved, setResolved] = useState<{
+    request: CreateWorktreeRequest
+    preview: WorktreeCreationPreview
+  } | null>(null)
   useEffect(() => {
     if (hasWorktree) return
     let live = true
     if (!request.branch) {
-      setPreview(null)
-      setChecking(false)
       return
     }
-    setChecking(true)
     const timer = window.setTimeout(() => {
       void api
         .previewWorktreeCreation(request)
         .then((value) => {
-          if (live) setPreview(value)
+          if (live) setResolved({ request, preview: value })
         })
         .catch((cause) => {
           if (live)
-            setPreview({
-              path: '',
-              branch: request.branch,
-              startRef: request.startRef ?? request.branch,
-              error: String(cause),
+            setResolved({
+              request,
+              preview: {
+                path: '',
+                branch: request.branch,
+                startRef: request.startRef ?? request.branch,
+                error: String(cause),
+              },
             })
-        })
-        .finally(() => {
-          if (live) setChecking(false)
         })
     }, 180)
     return () => {
@@ -322,7 +379,8 @@ function useCreationPreview(request: CreateWorktreeRequest, hasWorktree: boolean
     }
   }, [request, hasWorktree])
 
-  return { preview, checking }
+  const preview = resolved?.request === request ? resolved.preview : null
+  return { preview, checking: Boolean(request.branch) && !preview }
 }
 
 function useCreationLifecycle(
@@ -386,6 +444,9 @@ function NewWorktreeShell({
   create,
   children,
 }: NewWorktreeShellProps) {
+  const composingRef = useRef(false)
+  const ignoreCompositionEnterRef = useRef(false)
+  const mac = isMacPlatform()
   return (
     <Dialog
       titleId="new-worktree-title"
@@ -393,7 +454,48 @@ function NewWorktreeShell({
       canClose={!busy || created}
       initialFocus="#create-branch"
     >
-      <section className="flex max-h-[90vh] flex-col overflow-hidden">
+      <form
+        className="flex max-h-[90vh] flex-col overflow-hidden"
+        onSubmit={(event: FormEvent<HTMLFormElement>) => {
+          event.preventDefault()
+          if (composingRef.current || ignoreCompositionEnterRef.current) return
+          if (!created && canCreate && !busy) void create()
+        }}
+        onCompositionStart={() => {
+          composingRef.current = true
+        }}
+        onCompositionEnd={() => {
+          composingRef.current = false
+        }}
+        onKeyDownCapture={(event: KeyboardEvent<HTMLFormElement>) => {
+          if (event.key !== 'Enter') return
+          if (
+            composingRef.current ||
+            event.nativeEvent.isComposing ||
+            event.nativeEvent.keyCode === 229
+          ) {
+            ignoreCompositionEnterRef.current = true
+            window.setTimeout(() => {
+              ignoreCompositionEnterRef.current = false
+            }, 0)
+          } else {
+            ignoreCompositionEnterRef.current = false
+          }
+        }}
+        onKeyDown={(event: KeyboardEvent<HTMLFormElement>) => {
+          if (
+            event.key !== 'Enter' ||
+            (mac ? !event.metaKey || event.ctrlKey : !event.ctrlKey || event.metaKey) ||
+            event.nativeEvent.isComposing ||
+            event.nativeEvent.keyCode === 229 ||
+            !(event.target instanceof HTMLInputElement) ||
+            event.target.type !== 'text'
+          )
+            return
+          event.preventDefault()
+          event.currentTarget.requestSubmit()
+        }}
+      >
         <header className="flex items-start justify-between gap-4 border-b border-border px-6 py-5">
           <div>
             <h2 id="new-worktree-title" className="text-lg font-semibold">
@@ -428,16 +530,21 @@ function NewWorktreeShell({
           )}
         </div>
         <footer className="flex justify-end gap-2 border-t border-border px-6 py-4">
+          {!created && (
+            <span className="mr-auto self-center text-xs text-muted">
+              Enter or {shortcutLabel('Enter', mac)} in branch fields
+            </span>
+          )}
           <Button onClick={onClose} disabled={busy && !created}>
             {created ? 'Done' : busy ? 'Working…' : 'Cancel'}
           </Button>
           {!created && (
-            <Button variant="primary" onClick={() => void create()} disabled={busy || !canCreate}>
+            <Button type="submit" variant="primary" disabled={busy || !canCreate}>
               Create worktree
             </Button>
           )}
         </footer>
-      </section>
+      </form>
     </Dialog>
   )
 }
@@ -453,8 +560,12 @@ export function NewWorktreeModal({ repository, onClose, onCreated }: NewWorktree
   const [customParent, setCustomParent] = useState(
     repository.worktreeCustomParent ?? settings?.defaultWorktreeCustomParent ?? ''
   )
+  const [overrideSetup, setOverrideSetup] = useState(false)
+  const [overrideCommand, setOverrideCommand] = useState(repository.postCreateCommand ?? '')
   const [branches, setBranches] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
+  const creatingRef = useRef(false)
+  const createdRef = useRef(false)
   const [error, setError] = useState('')
   useEffect(() => {
     let live = true
@@ -494,7 +605,18 @@ export function NewWorktreeModal({ repository, onClose, onCreated }: NewWorktree
   }
 
   const create = async () => {
-    if (busy || checking || !preview || preview.error || !preview.sourceCommit) return
+    if (
+      creatingRef.current ||
+      createdRef.current ||
+      busy ||
+      result?.worktree ||
+      checking ||
+      !preview ||
+      preview.error ||
+      !preview.sourceCommit
+    )
+      return
+    creatingRef.current = true
     registeredRef.current = false
     activeBranchRef.current = request.branch
     setBusy(true)
@@ -507,14 +629,17 @@ export function NewWorktreeModal({ repository, onClose, onCreated }: NewWorktree
     try {
       const created = await api.createWorktree({
         ...request,
+        ...(overrideSetup ? { postCreateCommandOverride: overrideCommand } : {}),
         expectedSourceCommit: preview.sourceCommit,
       })
+      if (created.worktree) createdRef.current = true
       setResult(created)
       if (created.worktree && !registeredRef.current) onCreated(created)
       if (!created.success) setError(created.error ?? 'Could not create the worktree.')
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
+      creatingRef.current = false
       setBusy(false)
     }
   }
@@ -591,6 +716,10 @@ export function NewWorktreeModal({ repository, onClose, onCreated }: NewWorktree
           setLocation={setLocation}
           customParent={customParent}
           setCustomParent={setCustomParent}
+          overrideSetup={overrideSetup}
+          setOverrideSetup={setOverrideSetup}
+          overrideCommand={overrideCommand}
+          setOverrideCommand={setOverrideCommand}
           busy={busy}
           preview={preview}
           chooseParent={chooseParent}

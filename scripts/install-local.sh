@@ -84,7 +84,11 @@ find_artifact() {
 case "$TARGET_OS" in
   mac)
     DMG="$(find_artifact '*.dmg')"
-    APP_BUILT="$(find "$RELEASE_DIR" -maxdepth 2 -name 'Worktree Manager.app' -type d 2>/dev/null | head -n 1)"
+    # electron-builder writes arm64 to mac-arm64/ and x64 to mac/; older builds of
+    # the other arch can linger in release/, so pick this machine's directory.
+    if [ "$ARCH" = "arm64" ]; then APP_DIR="mac-arm64"; else APP_DIR="mac"; fi
+    APP_BUILT="$RELEASE_DIR/$APP_DIR/Worktree Manager.app"
+    [ -d "$APP_BUILT" ] || APP_BUILT=""
     echo "==> Built $DMG"
     if [ "$NO_INSTALL" -eq 0 ] && [ -n "$APP_BUILT" ]; then
       rm -rf "/Applications/Worktree Manager.app"

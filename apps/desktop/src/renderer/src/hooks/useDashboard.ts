@@ -148,6 +148,20 @@ async function measureBatch(
   await Promise.all(Array.from({ length: Math.min(3, targets.length) }, () => runWorker()))
 }
 
+export const WORKTREE_FILTERS = [
+  'all',
+  'pr-merged',
+  'dirty',
+  'unmerged',
+  'unpushed',
+  'safe',
+] as const
+export type WorktreeFilter = (typeof WORKTREE_FILTERS)[number]
+
+export const WORKTREE_FILTER_LABELS: Partial<Record<WorktreeFilter, string>> = {
+  'pr-merged': 'PR Merged',
+}
+
 export interface UseDashboardReturn {
   repositories: Repository[]
   worktrees: Worktree[]
@@ -190,8 +204,8 @@ export interface UseDashboardReturn {
   effectiveEditor: string
   sortMode: WorktreeSort
   sortDirection: WorktreeSortDirection
-  filter: 'all' | 'dirty' | 'unmerged' | 'unpushed' | 'safe'
-  setFilter: (value: 'all' | 'dirty' | 'unmerged' | 'unpushed' | 'safe') => void
+  filter: WorktreeFilter
+  setFilter: (value: WorktreeFilter) => void
   search: string
   setSearch: (value: string) => void
   configRepoId: string | null
@@ -276,7 +290,7 @@ export function useDashboard(): UseDashboardReturn {
     setScanProgress,
   } = useAppStore()
 
-  const [filter, setFilter] = useState<'all' | 'dirty' | 'unmerged' | 'unpushed' | 'safe'>('all')
+  const [filter, setFilter] = useState<WorktreeFilter>('all')
   const [search, setSearch] = useState('')
   const [selectedWorktreeIds, setSelectedWorktreeIds] = useState<Set<string>>(new Set())
   const [projectSearch, setProjectSearch] = useState('')
@@ -1010,7 +1024,9 @@ export function useDashboard(): UseDashboardReturn {
         const text = `${status?.branch ?? w.branch} ${w.path}`.toLowerCase()
         if (!text.includes(query)) continue
       }
-      if (filter === 'dirty') {
+      if (filter === 'pr-merged') {
+        if (status?.pullRequest?.state !== 'merged') continue
+      } else if (filter === 'dirty') {
         if (!status?.dirty && !status?.staged && !status?.hasUntracked) continue
       } else if (filter === 'unmerged') {
         const branch = status?.branch ?? w.branch

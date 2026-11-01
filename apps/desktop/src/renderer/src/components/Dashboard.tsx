@@ -25,7 +25,13 @@ import type {
 } from '@worktree/contracts'
 import { formatBytes } from '@worktree/contracts'
 import { useAppStore } from '../store'
-import { useDashboard, defaultDirectionFor } from '../hooks/useDashboard'
+import {
+  useDashboard,
+  defaultDirectionFor,
+  WORKTREE_FILTERS,
+  WORKTREE_FILTER_LABELS,
+  type WorktreeFilter,
+} from '../hooks/useDashboard'
 import { useDashboardShortcuts } from '../hooks/useDashboardShortcuts'
 import { api } from '../api'
 import { WorktreeRow } from './WorktreeRow'
@@ -425,8 +431,8 @@ function ProjectStorageActions({
 interface DashboardControlsProps {
   search: string
   setSearch: (value: string) => void
-  filter: 'all' | 'dirty' | 'unmerged' | 'unpushed' | 'safe'
-  setFilter: (value: 'all' | 'dirty' | 'unmerged' | 'unpushed' | 'safe') => void
+  filter: WorktreeFilter
+  setFilter: (value: WorktreeFilter) => void
   sortMode: WorktreeSort
   sortDirection: WorktreeSortDirection
   updateWorktreeSort: (sort: WorktreeSort, direction: WorktreeSortDirection) => void
@@ -491,7 +497,7 @@ function DashboardControls({
           aria-label="Filter worktrees"
           className="flex items-center gap-0.5 rounded-md border border-border bg-card p-0.5"
         >
-          {(['all', 'dirty', 'unmerged', 'unpushed', 'safe'] as const).map((f) => (
+          {WORKTREE_FILTERS.map((f) => (
             <Button
               variant={filter === f ? 'primary' : 'quiet'}
               size="compact"
@@ -500,7 +506,7 @@ function DashboardControls({
               aria-pressed={filter === f}
               className="capitalize"
             >
-              {f}
+              {WORKTREE_FILTER_LABELS[f] ?? f}
             </Button>
           ))}
         </div>
@@ -563,7 +569,7 @@ interface DashboardWorktreeListProps {
   cleaningIds: Set<string>
   pendingRemovals: Record<string, 'sweeping' | 'hidden'>
   search: string
-  filter: 'all' | 'dirty' | 'unmerged' | 'unpushed' | 'safe'
+  filter: WorktreeFilter
   onClearFilters: () => void
   effectiveEditor: string
   selectedRepo: Repository

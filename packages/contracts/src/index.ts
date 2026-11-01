@@ -495,12 +495,32 @@ export interface CleanupCandidate {
   branch: string
   /** Why it needs a look; empty for `ready`. */
   reasons: string[]
+  /** The PR for this exact branch, so the reviewer can tell merged from draft/open. */
+  pullRequest?: PullRequest
+  /** Lookup outcome, to tell "no PR" apart from "could not check". */
+  prLookupState?: PullRequestLookup['state']
+}
+
+/**
+ * PR facts a cleanup row needs. The PR only counts when it belongs to the
+ * branch being shown: a status refresh after a checkout can briefly carry the
+ * previous branch's PR, and labelling a row with it would be worse than none.
+ */
+export function cleanupPullRequestInfo(
+  status: WorktreeStatus | undefined,
+  branch: string
+): Pick<CleanupCandidate, 'pullRequest' | 'prLookupState'> {
+  if (!status) return {}
+  return {
+    ...(status.pullRequest?.branch === branch && { pullRequest: status.pullRequest }),
+    ...(status.prLookup && { prLookupState: status.prLookup.state }),
+  }
 }
 
 export function cleanupCandidacy(
   worktree: Worktree,
   status: WorktreeStatus | undefined
-): { kind: CleanupCandidateKind; branch: string; reasons: string[] } | undefined {
+): Omit<CleanupCandidate, 'worktree'> | undefined {
   if (worktree.isMain || worktree.prunable || !status) return undefined
   const branch = status.branch ?? worktree.branch
   if (branch === 'HEAD' || branch === status.baseBranch) return undefined
@@ -521,9 +541,10 @@ export function cleanupCandidacy(
     return undefined
 
   const reasons = worktreeSafetyReasons(worktree, status)
+  const pr = cleanupPullRequestInfo(status, branch)
   return reasons.length === 0
-    ? { kind: 'ready', branch, reasons: [] }
-    : { kind: 'review', branch, reasons }
+    ? { kind: 'ready', branch, reasons: [], ...pr }
+    : { kind: 'review', branch, reasons, ...pr }
 }
 
 export const detectedTokenSchema = z.object({

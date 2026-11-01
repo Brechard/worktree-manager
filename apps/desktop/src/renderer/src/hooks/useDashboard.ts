@@ -13,6 +13,7 @@ import type {
 } from '@worktree/contracts'
 import {
   cleanupCandidacy,
+  cleanupPullRequestInfo,
   formatBytes,
   recommendedSyncMode,
   updateOffers,
@@ -59,6 +60,28 @@ function collectCleanupCandidates(repositoryId: string): CleanupCandidate[] {
       (state.diskUsage[a.worktree.id]?.totalBytes ?? 0)
     )
   })
+}
+
+/**
+ * A worktree the user picked by hand. It need not have landed, so one that is
+ * not a candidate is listed for review with its safety reasons instead.
+ */
+function manualCleanupCandidate(
+  worktree: Worktree,
+  status: WorktreeStatus | undefined
+): CleanupCandidate {
+  const candidacy = cleanupCandidacy(worktree, status)
+  if (candidacy) return { worktree, ...candidacy }
+  const branch = status?.branch ?? worktree.branch
+  return {
+    worktree,
+    kind: 'review',
+    branch,
+    reasons: status
+      ? worktreeSafetyReasons(worktree, status)
+      : ['Status has not been checked; changes and commits may be lost'],
+    ...cleanupPullRequestInfo(status, branch),
+  }
 }
 
 /** Add or remove one id without touching the rest of the set's identity. */
@@ -1036,18 +1059,7 @@ export function useDashboard(): UseDashboardReturn {
         removalVisibility.isPending(worktree.id)
       )
         return
-      const status = statuses[worktree.id]
-      const candidacy = cleanupCandidacy(worktree, status)
-      const candidate: CleanupCandidate = candidacy
-        ? { worktree, ...candidacy }
-        : {
-            worktree,
-            kind: 'review',
-            branch: status?.branch ?? worktree.branch,
-            reasons: status
-              ? worktreeSafetyReasons(worktree, status)
-              : ['Status has not been checked; changes and commits may be lost'],
-          }
+      const candidate = manualCleanupCandidate(worktree, statuses[worktree.id])
       setCleanupCandidates({
         repositoryId: worktree.repositoryId,
         candidates: [candidate],
@@ -1067,20 +1079,7 @@ export function useDashboard(): UseDashboardReturn {
           w.postCreateSetupState !== 'running' &&
           !removalVisibility.isPending(w.id)
       )
-      .map((worktree) => {
-        const status = statuses[worktree.id]
-        const candidacy = cleanupCandidacy(worktree, status)
-        return candidacy
-          ? { worktree, ...candidacy }
-          : {
-              worktree,
-              kind: 'review' as const,
-              branch: status?.branch ?? worktree.branch,
-              reasons: status
-                ? worktreeSafetyReasons(worktree, status)
-                : ['Status has not been checked; changes and commits may be lost'],
-            }
-      })
+      .map((worktree) => manualCleanupCandidate(worktree, statuses[worktree.id]))
     if (candidates.length)
       setCleanupCandidates({ repositoryId: selectedRepo.id, candidates, manual: true })
   }, [selectedRepo, repoWorktrees, selectedWorktreeIds, statuses])

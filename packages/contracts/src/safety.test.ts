@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   cleanupCandidacy,
+  cleanupPullRequestInfo,
   isSafeToDelete,
   worktreeSafetyReasons,
   type Worktree,
@@ -56,6 +57,7 @@ test('no-provider workflow remains eligible', () => {
     kind: 'ready',
     branch: 'feature',
     reasons: [],
+    prLookupState: 'not-configured',
   })
 })
 
@@ -163,4 +165,21 @@ test('failed base fetch and base checkout are never safe for automatic removal',
   assert.equal(cleanupCandidacy(worktree, { ...status, baseFetchError: 'fetch failed' }), undefined)
   assert.equal(isSafeToDelete(worktree, { ...status, branch: 'main' }), false)
   assert.equal(cleanupCandidacy(worktree, { ...status, branch: 'main' }), undefined)
+})
+
+test('cleanup rows carry the PR of their own branch only', () => {
+  const pullRequest = {
+    id: 'gh-7',
+    title: 'Feature',
+    url: 'https://example.test/pull/7',
+    state: 'draft' as const,
+    branch: 'feature',
+  }
+  const withPr = { ...status, prLookup: { state: 'found' as const, checkedAt: 1 }, pullRequest }
+  assert.deepEqual(cleanupPullRequestInfo(withPr, 'feature'), {
+    pullRequest,
+    prLookupState: 'found',
+  })
+  assert.deepEqual(cleanupPullRequestInfo(withPr, 'other'), { prLookupState: 'found' })
+  assert.deepEqual(cleanupPullRequestInfo(undefined, 'feature'), {})
 })

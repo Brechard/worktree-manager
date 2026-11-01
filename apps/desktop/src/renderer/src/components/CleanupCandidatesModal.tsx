@@ -1,7 +1,16 @@
 import { useState } from 'react'
 import { Dialog } from './ui/Dialog'
 import { Button, IconButton } from './ui/Button'
-import { AlertTriangle, CheckSquare, GitBranch, HardDrive, Square, Trash2, X } from 'lucide-react'
+import {
+  AlertTriangle,
+  CheckSquare,
+  ExternalLink,
+  GitBranch,
+  HardDrive,
+  Square,
+  Trash2,
+  X,
+} from 'lucide-react'
 import type {
   CleanupCandidate,
   Repository,
@@ -12,6 +21,7 @@ import type {
 import { formatBytes } from '@worktree/contracts'
 import { shortenPath } from '../lib/paths'
 import { api } from '../api'
+import { cn } from '../lib/utils'
 
 interface CleanupCandidatesModalProps {
   repositoryName: string
@@ -37,6 +47,52 @@ interface CleanupCandidatesModalProps {
  *
  * Sizes are the reason to act, so they are on every row and on the button.
  */
+/**
+ * The branch's pull request, since "merged" and "still a draft" call for
+ * opposite decisions here. It is a sibling of the row toggle, not a child,
+ * because a link cannot live inside the toggle button.
+ */
+function CandidatePullRequest({ candidate }: { candidate: CleanupCandidate }) {
+  const { pullRequest, prLookupState } = candidate
+  if (!pullRequest) {
+    const label =
+      prLookupState === 'none'
+        ? 'No pull request found'
+        : prLookupState === 'error'
+          ? 'Pull request check failed'
+          : null
+    return label ? <p className="pl-8 pr-2 pb-1 text-xs text-muted">{label}</p> : null
+  }
+  const number = pullRequest.id.match(/^(?:gh|ado)-([1-9]\d*)$/)?.[1]
+  return (
+    <div className="pl-8 pr-2 pb-1">
+      <button
+        type="button"
+        onClick={() => void api.openExternal(pullRequest.url)}
+        title={pullRequest.title}
+        aria-label={`PR${number ? ` #${number}` : ''}, ${pullRequest.state}: ${pullRequest.title}`}
+        className={cn(
+          'inline-flex max-w-full items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium',
+          prLookupState === 'error' && 'opacity-70',
+          pullRequest.state === 'open' && 'bg-success/15 text-success',
+          (pullRequest.state === 'draft' || pullRequest.state === 'closed') &&
+            'bg-muted/20 text-muted',
+          pullRequest.state === 'merged' && 'bg-merged/15 text-merged'
+        )}
+      >
+        <ExternalLink className="h-3 w-3 shrink-0" />
+        <span className="shrink-0 whitespace-nowrap tabular-nums">
+          {prLookupState === 'error' ? 'Last known ' : ''}PR{number ? ` #${number}` : ''} ·{' '}
+          {pullRequest.state}
+        </span>
+        <span aria-hidden="true" className="min-w-0 truncate">
+          · {pullRequest.title}
+        </span>
+      </button>
+    </div>
+  )
+}
+
 interface CleanupCandidateRowProps {
   candidate: CleanupCandidate
   repository: Repository
@@ -112,6 +168,7 @@ function CleanupCandidateRow({
           )}
         </span>
       </button>
+      <CandidatePullRequest candidate={candidate} />
       <div className="pl-8 pr-2 pb-2">
         <button
           type="button"

@@ -24,7 +24,7 @@ import { Button } from './ui/Button'
 const BusyIcon = <Loader2 className="h-3.5 w-3.5 animate-spin" />
 
 const itemClass =
-  'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] text-foreground transition-colors hover:bg-accent disabled:opacity-50'
+  'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] text-foreground transition-colors hover:bg-accent disabled:opacity-50 [&>svg]:shrink-0'
 
 export type MergeMode = 'merge' | 'no-ff' | 'squash' | 'rebase'
 
@@ -159,7 +159,7 @@ export function GitActionsMenu({
           <div
             id={menuId}
             ref={menuRef}
-            className="fixed z-50 w-56 rounded-md border border-border bg-background p-1 shadow-2xl ring-1 ring-border"
+            className="fixed z-50 w-64 rounded-md border border-border bg-background p-1 shadow-2xl ring-1 ring-border"
             style={{
               top: position?.top ?? 0,
               left: position?.left ?? 0,
@@ -540,6 +540,7 @@ function GitUpdateBaseAction({
 }
 
 function GitUpstreamBranchActions({
+  baseOffer,
   upstreamOffer,
   busy,
   locked,
@@ -549,56 +550,65 @@ function GitUpstreamBranchActions({
   onSync,
   onPush,
 }: GitActionsRootProps) {
+  // The base offer above already fast-forwards or rebases onto the same ref
+  // (on the base branch the upstream *is* the base ref), and a branch level with
+  // its upstream has nothing to pull. Repeating the rows is just noise.
+  const repeatsBaseOffer =
+    baseOffer !== undefined && (!upstreamOffer || upstreamOffer.ref === baseOffer.ref)
   return (
     <>
-      {upstreamOffer && (
+      {upstreamOffer && !repeatsBaseOffer && (
         <p className="px-2 py-1 text-xs font-semibold uppercase tracking-wide text-muted">
           {upstreamOffer.behind} new commit{upstreamOffer.behind === 1 ? '' : 's'} on{' '}
           {upstreamOffer.ref}
         </p>
       )}
-      <button
-        type="button"
-        onClick={() => {
-          closeWithFocus()
-          onPull()
-        }}
-        disabled={locked}
-        className={cn(itemClass, busy === 'pull' && 'bg-accent')}
-      >
-        {busy === 'pull' ? BusyIcon : <Download className="h-3.5 w-3.5" />}
-        Pull fast-forward
-        {upstreamOffer?.mode === 'ff' && <SuggestedTag />}
-      </button>
-      <button
-        type="button"
-        onClick={() => {
-          closeWithFocus()
-          onRebase()
-        }}
-        disabled={locked}
-        className={cn(itemClass, busy === 'rebase' && 'bg-accent')}
-      >
-        {busy === 'rebase' ? BusyIcon : <RefreshCw className="h-3.5 w-3.5" />}
-        Pull with rebase
-        {upstreamOffer?.mode === 'rebase' && <SuggestedTag />}
-      </button>
-      {/* Only once the branch and its upstream have actually diverged:
+      {!repeatsBaseOffer && (
+        <>
+          <button
+            type="button"
+            onClick={() => {
+              closeWithFocus()
+              onPull()
+            }}
+            disabled={locked}
+            className={cn(itemClass, busy === 'pull' && 'bg-accent')}
+          >
+            {busy === 'pull' ? BusyIcon : <Download className="h-3.5 w-3.5" />}
+            Pull fast-forward
+            {upstreamOffer?.mode === 'ff' && <SuggestedTag />}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              closeWithFocus()
+              onRebase()
+            }}
+            disabled={locked}
+            className={cn(itemClass, busy === 'rebase' && 'bg-accent')}
+          >
+            {busy === 'rebase' ? BusyIcon : <RefreshCw className="h-3.5 w-3.5" />}
+            Pull with rebase
+            {upstreamOffer?.mode === 'rebase' && <SuggestedTag />}
+          </button>
+          {/* Only once the branch and its upstream have actually diverged:
                     before that a merge is just a fast-forward wearing a hat. */}
-      {upstreamOffer && upstreamOffer.ahead > 0 && (
-        <button
-          type="button"
-          onClick={() => {
-            closeWithFocus()
-            onSync('upstream', 'merge')
-          }}
-          disabled={locked}
-          className={itemClass}
-        >
-          <GitMerge className="h-3.5 w-3.5" />
-          Merge {upstreamOffer.ref} in
-          {upstreamOffer.mode === 'merge' && <SuggestedTag />}
-        </button>
+          {upstreamOffer && upstreamOffer.ahead > 0 && (
+            <button
+              type="button"
+              onClick={() => {
+                closeWithFocus()
+                onSync('upstream', 'merge')
+              }}
+              disabled={locked}
+              className={itemClass}
+            >
+              <GitMerge className="h-3.5 w-3.5" />
+              Merge {upstreamOffer.ref} in
+              {upstreamOffer.mode === 'merge' && <SuggestedTag />}
+            </button>
+          )}
+        </>
       )}
       <button
         type="button"
